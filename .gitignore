@@ -1,50 +1,34 @@
-# Dependencies
+# dependencies
 node_modules/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
 
-# Build output
+# build output
+.next/
 dist/
-build/
 *.tsbuildinfo
 
-# Env files (keep .env.example)
+# secrets
 .env
-.env.*
+.env.local
+.env.*.local
 !.env.example
 
-# Logs
-logs/
+# local Windows binaries
+tools/redis/
+tools/nginx/
+
+# runtime data
+storage/evidence/*
+!storage/evidence/.gitkeep
+tests/artifacts/
+
+# model weights (see question below)
+ai-service/models/*
+!ai-service/models/.gitkeep
+
+# misc
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Runtime / process managers
-pids/
-*.pid
-*.seed
-.pm2/
-
-# Uploads / temp files
-uploads/
-tmp/
-temp/
-
-# Keys / certs
-*.pem
-*.key
-*.crt
-*.p12
-
-# Test / coverage / cache
-coverage/
-.nyc_output/
-.eslintcache
-.cache/
-
-# OS / Editor
 .DS_Store
-Thumbs.db
-.idea/
-.vscode/*
-!.vscode/extensions.json
-*.swp
