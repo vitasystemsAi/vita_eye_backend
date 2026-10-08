@@ -32,3 +32,5 @@ ai-service/models/*
 # misc
 *.log
 .DS_Store
+
+tests/fixtures/*.y4m

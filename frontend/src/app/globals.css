@@ -1,0 +1,57 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+
+  --color-ink-950: #05080f;
+  --color-ink-900: #0a0f1c;
+  --color-ink-850: #0d1424;
+  --color-ink-800: #111a2e;
+  --color-ink-700: #18233c;
+  --color-ink-600: #22304f;
+  --color-ink-500: #33446a;
+  --color-ink-400: #5b6b8f;
+  --color-ink-300: #8b98b6;
+  --color-ink-200: #b8c2d9;
+  --color-ink-100: #dfe5f2;
+
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+  --color-brand-700: #1d4ed8;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-ink-950 text-ink-100 antialiased;
+  }
+  ::selection {
+    @apply bg-brand-600/40;
+  }
+  * {
+    scrollbar-color: var(--color-ink-600) transparent;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-ink-700/70 bg-ink-900/80 shadow-[0_1px_0_0_rgba(255,255,255,0.03)_inset];
+  }
+  .input {
+    @apply w-full rounded-lg border border-ink-600 bg-ink-850 px-3 py-2 text-sm text-ink-100 placeholder:text-ink-400 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 disabled:opacity-60;
+  }
+  .label {
+    @apply mb-1.5 block text-xs font-medium tracking-wide text-ink-300 uppercase;
+  }
+  .table-head {
+    @apply px-4 py-3 text-left text-xs font-semibold tracking-wide text-ink-300 uppercase;
+  }
+  .table-cell {
+    @apply px-4 py-3 text-sm text-ink-100;
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "vita-eye-e2e",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end smoke tests against running VITA EYE services",
+  "scripts": {
+    "auth": "node smoke-auth.mjs",
+    "e2e": "node smoke-e2e.mjs"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.4"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}
