@@ -34,3 +34,7 @@ ai-service/models/*
 .DS_Store
 
 tests/fixtures/*.y4m
+
+# server-only files
+infra/nginx/certs/*.pem
+secrets/
