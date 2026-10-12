@@ -49,7 +49,8 @@ function FaceOverlay({ frameSize, faces, fit }: { frameSize: [number, number]; f
 function jpegBlob(image: unknown): Blob | null {
   if (image instanceof ArrayBuffer) return new Blob([image], { type: 'image/jpeg' });
   if (ArrayBuffer.isView(image)) {
-    const view = new Uint8Array(image.buffer, image.byteOffset, image.byteLength);
+    const view = new Uint8Array(image.byteLength);
+    view.set(new Uint8Array(image.buffer, image.byteOffset, image.byteLength));
     return new Blob([view], { type: 'image/jpeg' });
   }
   return null;
