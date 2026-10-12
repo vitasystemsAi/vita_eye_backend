@@ -1,6 +1,6 @@
 import type http from 'node:http';
 import { Server, type Socket } from 'socket.io';
-import { env } from '../config/env';
+import { isFrontendOrigin } from '../config/env';
 import { logger } from '../config/logger';
 import { COOKIE_ACCESS } from '../middleware/auth';
 import { Camera } from '../models';
@@ -8,6 +8,7 @@ import { buildAuthContext, verifyAccessToken } from '../services/auth.service';
 import { stopMonitoring } from '../services/cameras.service';
 import { handleBrowserFrame } from '../services/ingestion.service';
 import { signMonitorTicket, verifyMonitorTicket, type MonitorTicketClaims } from '../services/monitorTicket.service';
+import { cameraInScope } from '../services/scope';
 import { runInTenant } from '../services/tenancy.service';
 import type { AuthContext } from '../types/auth';
 import { rooms, setIo } from './emitter';
@@ -58,7 +59,7 @@ async function authenticateTicket(token: string): Promise<SocketData | Error> {
 
 export function createSocketServer(server: http.Server) {
   const io = new Server(server, {
-    cors: { origin: env.frontendOrigins, credentials: true },
+    cors: { origin: (origin, cb) => cb(null, isFrontendOrigin(origin)), credentials: true },
     maxHttpBufferSize: 3 * 1024 * 1024,
     pingInterval: 20_000,
     pingTimeout: 20_000,
@@ -67,7 +68,7 @@ export function createSocketServer(server: http.Server) {
   io.use(async (socket, next) => {
     try {
       const origin = socket.handshake.headers.origin;
-      if (origin && !env.frontendOrigins.includes(origin)) return next(new Error('ORIGIN_NOT_ALLOWED'));
+      if (!isFrontendOrigin(origin)) return next(new Error('ORIGIN_NOT_ALLOWED'));
       const ticket = (socket.handshake.auth as { monitorTicket?: unknown } | undefined)?.monitorTicket;
       if (typeof ticket === 'string') {
         const result = await authenticateTicket(ticket);
@@ -155,6 +156,27 @@ export function createSocketServer(server: http.Server) {
 
     socket.join(rooms.org(data.ctx.organizationId));
     socket.join(rooms.user(data.ctx.userId));
+
+    socket.on('preview:watch', (cameraId: unknown, ack?: Ack) =>
+      inTenant(async () => {
+        const reply = typeof ack === 'function' ? ack : () => undefined;
+        try {
+          const ctx = await freshContext();
+          if (!ctx?.permissions.has('cameras:view')) return reply({ ok: false, error: 'FORBIDDEN' });
+          if (typeof cameraId !== 'string' || !/^[0-9a-f-]{36}$/i.test(cameraId)) return reply({ ok: false, error: 'CAMERA_NOT_FOUND' });
+          const camera = await Camera.findByPk(cameraId, { attributes: ['id', 'organizationId', 'site', 'cameraType', 'monitoringEnabled'] });
+          if (!camera || !cameraInScope(ctx, camera)) return reply({ ok: false, error: 'CAMERA_NOT_FOUND' });
+          await socket.join(rooms.preview(camera.id));
+          reply({ ok: true, monitoring: camera.monitoringEnabled });
+        } catch (err) {
+          logger.warn({ err: (err as Error).message }, 'preview:watch failed');
+          reply({ ok: false, error: 'INTERNAL_ERROR' });
+        }
+      }),
+    );
+    socket.on('preview:unwatch', (cameraId: unknown) => {
+      if (typeof cameraId === 'string') socket.leave(rooms.preview(cameraId));
+    });
 
     // Force re-authentication when the access token expires; the client refreshes and reconnects.
     const ttl = Math.max(1000, data.exp * 1000 - Date.now());

@@ -62,7 +62,7 @@ async function loadAuthorized(ctx: AuthContext, evidenceId: string) {
     include: [{ model: DetectionEvent, as: 'event', include: [{ model: Camera, as: 'camera' }] }],
   });
   const event = (ev as unknown as { event?: DetectionEvent })?.event;
-  if (!ev || !event || event.organizationId !== ctx.organizationId) throw AppError.notFound('Evidence');
+  if (!ev || !event || event.organizationId !== ctx.organizationId || event.eventType === 'KNOWN') throw AppError.notFound('Evidence');
   assertCameraInScope(ctx, event.camera ?? null);
   if (ev.expiresAt && ev.expiresAt < new Date()) throw new AppError(410, 'EVIDENCE_EXPIRED', 'Evidence has expired under the retention policy');
   return { ev, event };
@@ -92,14 +92,14 @@ export async function issueEvidenceUrls(ctx: AuthContext, evidenceIds: string[],
   const rows = await EventEvidence.findAll({
     where: { id: { [Op.in]: evidenceIds } },
     attributes: ['id', 'expiresAt'],
-    include: [{ model: DetectionEvent, as: 'event', attributes: ['id', 'organizationId'], include: [{ model: Camera, as: 'camera' }] }],
+    include: [{ model: DetectionEvent, as: 'event', attributes: ['id', 'organizationId', 'eventType'], include: [{ model: Camera, as: 'camera' }] }],
   });
   const now = new Date();
   const exp = Math.floor(Date.now() / 1000) + env.EVIDENCE_URL_TTL_SECONDS;
   const urls: Record<string, { url: string; expiresAt: Date }> = {};
   for (const ev of rows) {
     const event = (ev as unknown as { event?: DetectionEvent }).event;
-    if (!event || event.organizationId !== ctx.organizationId || !cameraInScope(ctx, event.camera ?? null)) continue;
+    if (!event || event.eventType === 'KNOWN' || event.organizationId !== ctx.organizationId || !cameraInScope(ctx, event.camera ?? null)) continue;
     if (ev.expiresAt && ev.expiresAt < now) continue;
     const token = signToken({ e: ev.id, u: ctx.userId, o: ctx.organizationId, x: exp }, env.EVIDENCE_URL_SECRET);
     urls[ev.id] = { url: `/api/v1/evidence/download?token=${encodeURIComponent(token)}`, expiresAt: new Date(exp * 1000) };
@@ -152,12 +152,12 @@ export async function readEvidenceBatch(ctx: AuthContext, evidenceIds: string[],
   if (!evidenceIds.length) return out;
   const rows = await EventEvidence.scope('withStorage').findAll({
     where: { id: { [Op.in]: evidenceIds } },
-    include: [{ model: DetectionEvent, as: 'event', attributes: ['id', 'organizationId', 'cameraId'], include: [{ model: Camera, as: 'camera' }] }],
+    include: [{ model: DetectionEvent, as: 'event', attributes: ['id', 'organizationId', 'cameraId', 'eventType'], include: [{ model: Camera, as: 'camera' }] }],
   });
   const now = new Date();
   const allowed = rows.filter((ev) => {
     const event = (ev as unknown as { event?: DetectionEvent }).event;
-    return event && event.organizationId === ctx.organizationId && cameraInScope(ctx, event.camera ?? null) && !(ev.expiresAt && ev.expiresAt < now);
+    return event && event.eventType !== 'KNOWN' && event.organizationId === ctx.organizationId && cameraInScope(ctx, event.camera ?? null) && !(ev.expiresAt && ev.expiresAt < now);
   });
   let next = 0;
   const worker = async () => {

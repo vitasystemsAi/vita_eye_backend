@@ -107,7 +107,7 @@ function PreviewShell({ children }: { children: ReactNode }) {
   }, [onHome, router]);
   if (!onHome) return null;
   return (
-    <div className="relative min-h-screen">
+    <div className="flex h-screen flex-col bg-black">
       <ImpersonationBanner />
       <div className="fixed top-3 right-3 z-30 flex items-center gap-2">
         <AlertSoundToggle className="bg-ink-900/80 ring-1 ring-ink-800" />
@@ -120,7 +120,7 @@ function PreviewShell({ children }: { children: ReactNode }) {
           <LogOut className="h-4 w-4" />
         </button>
       </div>
-      <main className="px-4 py-6 sm:px-6 lg:px-8">{children}</main>
+      <main className="relative min-h-0 flex-1">{children}</main>
       <RealtimeAlerts toasts={false} />
     </div>
   );

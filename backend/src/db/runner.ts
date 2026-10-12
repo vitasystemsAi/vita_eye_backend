@@ -1,7 +1,7 @@
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { Sequelize } from 'sequelize';
-import { SequelizeStorage, Umzug, type UmzugOptions } from 'umzug';
+import { SequelizeStorage, Umzug, memoryStorage, type UmzugOptions } from 'umzug';
 import { env } from '../config/env';
 import { DEFAULT_SETTINGS } from '../config/defaultSettings';
 import { PERMISSIONS, ROLES } from '../config/rbac';
@@ -50,7 +50,9 @@ export function createSeeder(sequelize: Sequelize) {
       log: (msg: string) => console.log(`  [seed] ${msg}`),
     },
     // Role/permission seeding is idempotent and safe to re-run, so seeds are not recorded.
-    storage: undefined,
+    // Omitting storage makes Umzug fall back to JSONStorage (backend/umzug.json), which would
+    // skip later catalogue changes such as a new role. Memory storage starts empty every run.
+    storage: memoryStorage(),
     logger: console,
   });
 }

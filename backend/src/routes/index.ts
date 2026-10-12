@@ -42,6 +42,7 @@ internalRouter.use(requireInternalToken);
 internalRouter.get('/gallery/:organizationId', internal.gallery);
 internalRouter.post('/detections', internal.detections);
 internalRouter.post('/cameras/:id/status', internal.cameraStatus);
+internalRouter.post('/cameras/:id/preview', internal.cameraPreview);
 api.use('/internal', internalRouter);
 
 api.use('/', adminRoutes);

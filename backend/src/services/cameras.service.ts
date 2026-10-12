@@ -20,6 +20,7 @@ import {
   stopNetworkStream,
 } from './ingestion.service';
 import { signMonitorTicket } from './monitorTicket.service';
+import { emitToPreview } from '../sockets/emitter';
 import { assertCameraInScope, cameraScopeWhere } from './scope';
 import type { AuthContext } from '../types/auth';
 
@@ -234,6 +235,7 @@ export async function startMonitoring(ctx: AuthContext, id: string, ip: string |
 export async function stopMonitoring(ctx: AuthContext, id: string, ip: string | null, via?: 'monitor-device') {
   const cam = await load(ctx, id);
   await cam.update({ monitoringEnabled: false, monitorTicketId: null });
+  if (cam.cameraType === 'BROWSER') emitToPreview(cam.id, 'camera:preview:status', { cameraId: cam.id, monitoring: false });
   if (NETWORK_TYPES.has(cam.cameraType)) await stopNetworkStream(cam);
   await setCameraStatus(cam, cam.isActive ? 'OFFLINE' : 'DISABLED');
   await audit({

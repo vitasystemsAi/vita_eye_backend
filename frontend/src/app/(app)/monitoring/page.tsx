@@ -1,12 +1,13 @@
 'use client';
 
-import { MonitorPlay, Play, Radio, Square } from 'lucide-react';
+import { MonitorPlay, Radio } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
-import { CameraStatusBadge, EventTypeBadge } from '@/components/badges';
-import { BrowserMonitor } from '@/components/monitoring/BrowserMonitor';
+import { EventTypeBadge } from '@/components/badges';
+import { EvidenceLightbox, EvidenceThumb, useEvidenceImages } from '@/components/events/EvidenceThumbnails';
+import { CameraWall } from '@/components/monitoring/CameraWall';
 import { RequirePermission } from '@/components/RequirePermission';
-import { Button, Card, EmptyState, ErrorBanner, LoadingBlock, PageHeader } from '@/components/ui/primitives';
+import { Card, EmptyState, ErrorBanner, LoadingBlock, PageHeader } from '@/components/ui/primitives';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -38,6 +39,8 @@ function MonitoringView() {
   const notify = useToast();
   const cams = useApi<Camera[]>('/cameras', { pageSize: 200 });
   const recent = useApi<EventSummary[]>(can('events:view') ? '/events' : null, { pageSize: 15 });
+  const images = useEvidenceImages(recent.data ?? [], can('evidence:view'));
+  const [viewing, setViewing] = useState<EventSummary | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const replace = (c: Camera) => cams.setData((prev) => (prev ?? []).map((x) => (x.id === c.id ? c : x)));
@@ -61,73 +64,91 @@ function MonitoringView() {
     }
   }
 
-  const network = (cams.data ?? []).filter((c) => c.cameraType !== 'BROWSER');
+  const detections = !can('events:view') ? (
+    <p className="px-4 py-4 text-sm text-ink-400">Your role cannot view events.</p>
+  ) : recent.data?.length === 0 ? (
+    <EmptyState icon={<Radio className="h-5 w-5" />} title="Waiting for detections" />
+  ) : (
+    <ul className="divide-y divide-ink-800/80">
+      {recent.data?.map((e) => (
+        <li key={e.id}>
+          {preview ? (
+            <div className="flex items-center gap-3 px-4 py-2.5">
+              <EvidenceThumb event={e} image={e.evidenceId ? images[e.evidenceId] : undefined} onOpen={() => setViewing(e)} />
+              <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
+                <DetectionRow e={e} />
+              </div>
+            </div>
+          ) : (
+            <Link href={`/events/${e.id}`} className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-ink-800/50">
+              <DetectionRow e={e} />
+            </Link>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+
+  if (preview) {
+    return (
+      <>
+      <div className="absolute inset-0 bg-black">
+        {cams.error && (
+          <div className="absolute top-4 left-4 z-20 max-w-md">
+            <ErrorBanner error={cams.error} onRetry={cams.reload} />
+          </div>
+        )}
+        {cams.loading && !cams.data ? (
+          <div className="flex h-full items-center justify-center">
+            <LoadingBlock />
+          </div>
+        ) : (
+          <CameraWall
+            className="h-full rounded-none border-0"
+            cameras={cams.data ?? []}
+            busyId={busy}
+            canMonitor={can('cameras:monitor')}
+            onToggle={(camera) => void toggle(camera)}
+            onCameraChange={replace}
+          />
+        )}
+        {recent.data && recent.data.length > 0 && (
+          <aside className="absolute top-16 right-4 bottom-20 z-20 w-96 overflow-y-auto rounded-xl bg-ink-950/80 ring-1 ring-white/10 backdrop-blur">
+            <p className="sticky top-0 border-b border-white/10 bg-ink-950/90 px-4 py-3 text-sm font-semibold text-ink-100">Live detections</p>
+            {detections}
+          </aside>
+        )}
+      </div>
+      <EvidenceLightbox event={viewing} image={viewing?.evidenceId ? images[viewing.evidenceId] : undefined} onClose={() => setViewing(null)} />
+      </>
+    );
+  }
 
   return (
     <>
-      <PageHeader title="Live Monitoring" icon={<MonitorPlay className="h-5 w-5" />} description="Real-time recognition from this device's webcam and status of server-side camera streams." />
+      <PageHeader title="Live Monitoring" icon={<MonitorPlay className="h-5 w-5" />} description="One window for every camera. Watch them together, pick a set, or open a single camera fullscreen." />
       <ErrorBanner error={cams.error} onRetry={cams.reload} />
-      <div className="grid grid-cols-1 gap-6 2xl:grid-cols-3">
-        <Card title="Browser camera" description="Streams from this computer to the recognition service" className="2xl:col-span-2">
-          {cams.loading && !cams.data ? <LoadingBlock /> : <BrowserMonitor cameras={cams.data ?? []} onCameraChange={replace} />}
+      <div className="flex flex-col items-start gap-4 xl:flex-row">
+        {cams.loading && !cams.data ? (
+          <LoadingBlock />
+        ) : (
+          <CameraWall
+            className="w-full min-w-0 xl:flex-1"
+            cameras={cams.data ?? []}
+            busyId={busy}
+            canMonitor={can('cameras:monitor')}
+            onToggle={(camera) => void toggle(camera)}
+            onCameraChange={replace}
+          />
+        )}
+        <Card
+          className="flex max-h-[calc(100vh-11rem)] w-full shrink-0 flex-col overflow-hidden xl:sticky xl:top-4 xl:w-80"
+          title="Live detections"
+          description="Confirmed events across your sites"
+          actions={<Link href="/events" className="text-xs text-brand-400">History</Link>}
+        >
+          <div className="min-h-0 flex-1 overflow-y-auto">{detections}</div>
         </Card>
-        <div className="space-y-6">
-          <Card
-            title="Live detections"
-            description="Confirmed events across your sites"
-            actions={preview ? undefined : <Link href="/events" className="text-xs text-brand-400">History</Link>}
-          >
-            {!can('events:view') ? (
-              <p className="px-5 py-5 text-sm text-ink-400">Your role cannot view events.</p>
-            ) : recent.data?.length === 0 ? (
-              <EmptyState icon={<Radio className="h-5 w-5" />} title="Waiting for detections" />
-            ) : (
-              <ul className="max-h-[480px] divide-y divide-ink-800 overflow-y-auto">
-                {recent.data?.map((e) => (
-                  <li key={e.id}>
-                    {preview ? (
-                      <div className="flex items-center justify-between gap-3 px-5 py-3">
-                        <DetectionRow e={e} />
-                      </div>
-                    ) : (
-                      <Link href={`/events/${e.id}`} className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-ink-800/50">
-                        <DetectionRow e={e} />
-                      </Link>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-          {!preview && (
-            <Card title="Network cameras" description="RTSP / ONVIF / MJPEG ingested by the AI service">
-              {network.length === 0 ? (
-                <p className="px-5 py-5 text-sm text-ink-400">No network cameras configured.</p>
-              ) : (
-                <ul className="divide-y divide-ink-800">
-                  {network.map((c) => (
-                    <li key={c.id} className="flex items-center justify-between gap-3 px-5 py-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">{c.cameraName}</p>
-                        <p className="truncate text-xs text-ink-400" title={c.lastError ?? undefined}>
-                          {c.status === 'ERROR' && c.lastError ? c.lastError : `${c.location} · seen ${fmtRelative(c.lastConnectedAt)}`}
-                        </p>
-                        <div className="mt-1">
-                          <CameraStatusBadge status={c.isActive ? c.status : 'DISABLED'} monitoring={c.monitoringEnabled} />
-                        </div>
-                      </div>
-                      {can('cameras:monitor') && c.isActive && (
-                        <Button size="sm" variant={c.monitoringEnabled ? 'secondary' : 'primary'} loading={busy === c.id} icon={c.monitoringEnabled ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />} onClick={() => void toggle(c)}>
-                          {c.monitoringEnabled ? 'Stop' : 'Start'}
-                        </Button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Card>
-          )}
-        </div>
       </div>
     </>
   );

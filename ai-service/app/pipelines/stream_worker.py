@@ -16,6 +16,7 @@ from typing import Callable, Optional
 import cv2
 
 from app.models.schemas import Policy
+from app.pipelines.capture import open_working_capture
 from app.pipelines.recognition import RecognitionPipeline
 from app.services.backend_client import BackendClient
 
@@ -23,12 +24,13 @@ log = logging.getLogger("vita.stream")
 
 # Keep FFmpeg from waiting indefinitely on unreachable RTSP sources.
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000")
-
-OPEN_TIMEOUT_MS = 8000
-READ_TIMEOUT_MS = 8000
 MAX_BACKOFF_SEC = 60
 HEARTBEAT_SEC = 20
 GALLERY_POLL_SEC = 60
+PREVIEW_MAX_EDGE = 720
+PREVIEW_INTERVAL_SEC = 0.1
+PREVIEW_PROBE_SEC = 1.0
+FACE_HOLD_SEC = 1.5
 
 
 def redact(url: str) -> str:
@@ -38,26 +40,36 @@ def redact(url: str) -> str:
     return f"{scheme}://***@{rest.split('@', 1)[1]}"
 
 
-def open_capture(url: str) -> cv2.VideoCapture:
-    params = [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, OPEN_TIMEOUT_MS, cv2.CAP_PROP_READ_TIMEOUT_MSEC, READ_TIMEOUT_MS]
-    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG, params)
-    try:
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    except cv2.error:
-        pass
-    return cap
+def preview_jpeg(frame, faces: list[dict]) -> Optional[tuple[bytes, list[int], list[dict]]]:
+    """Downscale a frame for the monitoring wall and scale face boxes to match."""
+    height, width = frame.shape[:2]
+    scale = min(1.0, PREVIEW_MAX_EDGE / max(height, width))
+    image = frame
+    if scale < 1:
+        image = cv2.resize(frame, (max(1, round(width * scale)), max(1, round(height * scale))), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 48])
+    if not ok:
+        return None
+    scaled: list[dict] = []
+    for face in faces:
+        scaled.append({
+            **face,
+            "bbox": [round(float(v) * scale, 1) for v in face["bbox"]],
+            "personName": face.get("personName"),
+        })
+    return buf.tobytes(), [int(image.shape[1]), int(image.shape[0])], scaled
 
 
 def test_stream(url: str) -> dict:
-    cap = open_capture(url)
+    cap, _resolved, error = open_working_capture(url)
+    if cap is None:
+        return {"ok": False, "error": error or "Unable to connect to stream"}
     try:
-        if not cap.isOpened():
-            return {"ok": False, "error": "Unable to open stream (check address, credentials and network access)"}
         ok, frame = cap.read()
         if not ok or frame is None:
             return {"ok": False, "error": "Stream opened but no frame could be read"}
-        h, w = frame.shape[:2]
-        return {"ok": True, "width": int(w), "height": int(h)}
+        height, width = frame.shape[:2]
+        return {"ok": True, "width": int(width), "height": int(height)}
     finally:
         cap.release()
 
@@ -92,6 +104,11 @@ class StreamWorker(threading.Thread):
         self.events_sent = 0
         self.last_frame_at: Optional[float] = None
         self._last_gallery_poll = 0.0
+        self._preview_viewers = 0
+        self._last_preview = 0.0
+        self._preview_busy = threading.Lock()
+        self._overlay_lock = threading.Lock()
+        self._overlay: dict = {"faces": [], "at": 0.0}
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -121,45 +138,101 @@ class StreamWorker(threading.Thread):
     def run(self) -> None:
         backoff = 2.0
         while not self._stop_event.is_set():
-            cap = open_capture(self.cfg.url)
-            if not cap.isOpened():
-                cap.release()
-                self._set_status("ERROR", "Unable to connect to stream")
+            cap, resolved, error = open_working_capture(self.cfg.url)
+            if cap is None:
+                self._set_status("ERROR", error or "Unable to connect to stream")
                 log.warning("Camera %s: connect failed (%s); retry in %.0fs", self.cfg.camera_id, redact(self.cfg.url), backoff)
                 self._stop_event.wait(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF_SEC)
                 continue
+            if resolved != self.cfg.url:
+                log.info("Camera %s: video feed is %s", self.cfg.camera_id, redact(resolved))
+                self.cfg.url = resolved
 
             backoff = 2.0
             self._set_status("ONLINE")
             last_heartbeat = time.time()
             interval = 1.0 / max(self.cfg.sampling_fps, 0.1)
             next_sample = 0.0
+            latest: dict = {"frame": None}
+            frame_lock = threading.Lock()
+            failure: list[BaseException] = []
+            stop_read = threading.Event()
+            infer_gate = threading.Lock()
+
+            def reader() -> None:
+                try:
+                    while not self._stop_event.is_set() and not stop_read.is_set():
+                        if not cap.grab():
+                            failure.append(ConnectionError("Stream read failed"))
+                            return
+                        ok, frame = cap.retrieve()
+                        if not ok or frame is None:
+                            failure.append(ConnectionError("Frame decode failed"))
+                            return
+                        with frame_lock:
+                            latest["frame"] = frame.copy()
+                except Exception as exc:  # noqa: BLE001
+                    failure.append(exc)
+                finally:
+                    try:
+                        cap.release()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            reader_thread = threading.Thread(target=reader, name=f"read-{self.cfg.camera_id[:8]}", daemon=True)
+            reader_thread.start()
             try:
                 while not self._stop_event.is_set():
-                    if not cap.grab():
-                        raise ConnectionError("Stream read failed")
+                    if failure or not reader_thread.is_alive():
+                        raise failure[0] if failure else ConnectionError("Stream read failed")
                     now = time.time()
-                    if now < next_sample:
+                    if self._preview_viewers <= 0 and now - self._last_preview >= PREVIEW_PROBE_SEC:
+                        self._last_preview = now
+                        self._preview_viewers = self.backend.post_preview(self.cfg.camera_id, self.cfg.organization_id)
+                    want_preview = (
+                        self._preview_viewers > 0
+                        and now - self._last_preview >= PREVIEW_INTERVAL_SEC
+                        and not self._preview_busy.locked()
+                    )
+                    want_infer = now >= next_sample and not infer_gate.locked()
+                    with frame_lock:
+                        src = latest["frame"]
+                        snap = src.copy() if src is not None and (want_preview or want_infer) else None
+                        have_frame = src is not None
+                    if not have_frame:
+                        self._stop_event.wait(0.02)
                         continue
-                    next_sample = now + interval
-                    ok, frame = cap.retrieve()
-                    if not ok or frame is None:
-                        raise ConnectionError("Frame decode failed")
-                    self._process(frame, now)
+                    if snap is not None and want_preview:
+                        self._publish_latest(snap, now)
+                    if snap is not None and want_infer and infer_gate.acquire(blocking=False):
+                        next_sample = now + interval
+
+                        def recognize(img=snap, seen=now) -> None:
+                            try:
+                                self._recognize(img, seen)
+                            finally:
+                                infer_gate.release()
+
+                        threading.Thread(target=recognize, name=f"infer-{self.cfg.camera_id[:8]}", daemon=True).start()
                     if now - last_heartbeat > HEARTBEAT_SEC:
                         self.backend.post_camera_status(self.cfg.camera_id, "ONLINE", None, self.cfg.organization_id)
                         last_heartbeat = now
+                    self._stop_event.wait(0.02)
             except Exception as exc:  # noqa: BLE001 - any stream failure triggers reconnect
                 log.warning("Camera %s: %s; reconnecting", self.cfg.camera_id, exc)
                 self._set_status("ERROR", str(exc)[:200])
                 self._stop_event.wait(backoff)
             finally:
-                cap.release()
+                stop_read.set()
+                interrupt = getattr(cap, "interrupt", None)
+                if callable(interrupt):
+                    interrupt()
+                reader_thread.join(timeout=9)
         self._set_status("OFFLINE")
         self.pipeline.reset_camera(self.cfg.camera_id)
 
-    def _process(self, frame, now: float) -> None:
+    def _recognize(self, frame, now: float) -> None:
         if now - self._last_gallery_poll > GALLERY_POLL_SEC:
             self._last_gallery_poll = now
             latest = self.probe(self.cfg.organization_id, self.cfg.gallery_version)
@@ -174,6 +247,8 @@ class StreamWorker(threading.Thread):
             return
         self.frames_processed += 1
         self.last_frame_at = now
+        with self._overlay_lock:
+            self._overlay = {"faces": result.get("faces") or [], "at": now}
         if result["events"]:
             try:
                 self.backend.post_detections(
@@ -186,6 +261,37 @@ class StreamWorker(threading.Thread):
                 self.events_sent += len(result["events"])
             except Exception as exc:  # noqa: BLE001
                 log.error("Camera %s: failed to deliver %d event(s): %s", self.cfg.camera_id, len(result["events"]), exc)
+
+    def _publish_latest(self, frame, now: float) -> None:
+        """Push the newest picture without waiting for recognition. Face boxes ride along until the next result."""
+        if self._preview_viewers <= 0:
+            if now - self._last_preview < PREVIEW_PROBE_SEC:
+                return
+            self._last_preview = now
+            self._preview_viewers = self.backend.post_preview(self.cfg.camera_id, self.cfg.organization_id)
+            return
+        if now - self._last_preview < PREVIEW_INTERVAL_SEC:
+            return
+        if not self._preview_busy.acquire(blocking=False):
+            return
+        self._last_preview = now
+        with self._overlay_lock:
+            fresh = now - float(self._overlay.get("at") or 0) <= FACE_HOLD_SEC
+            faces = list(self._overlay.get("faces") or []) if fresh else []
+
+        def send(img=frame, marks=faces) -> None:
+            try:
+                encoded = preview_jpeg(img, marks)
+                if encoded is None:
+                    return
+                jpeg, size, scaled = encoded
+                self._preview_viewers = self.backend.post_preview(
+                    self.cfg.camera_id, self.cfg.organization_id, jpeg, scaled, size
+                )
+            finally:
+                self._preview_busy.release()
+
+        threading.Thread(target=send, name=f"preview-{self.cfg.camera_id[:8]}", daemon=True).start()
 
 
 class StreamManager:

@@ -208,7 +208,7 @@ function SettingsView() {
           <>
             <div className="grid grid-cols-1 gap-6 p-5 md:grid-cols-2">
               <div>
-                <Switch label="Capture evidence images" description="Store an encrypted face close-up and full photo with each event" checked={d.events.captureEvidence} disabled={!editable || !hasFeature('evidenceCapture')} onChange={(v) => setDraft({ ...d, events: { ...d.events, captureEvidence: v } })} />
+                <Switch label="Capture evidence images" description="Store an encrypted face close-up and full photo for unrecognized and uncertain events. Registered persons are not photographed." checked={d.events.captureEvidence} disabled={!editable || !hasFeature('evidenceCapture')} onChange={(v) => setDraft({ ...d, events: { ...d.events, captureEvidence: v } })} />
                 <Switch label="Record registered-person events" description="Keep a history of recognized people (auto-resolved)" checked={d.events.recordKnownEvents} disabled={!editable} onChange={(v) => setDraft({ ...d, events: { ...d.events, recordKnownEvents: v } })} />
               </div>
               <div className="space-y-4">

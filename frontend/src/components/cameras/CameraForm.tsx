@@ -140,7 +140,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
           <Field
             label={camera ? 'New stream URL (leave blank to keep current)' : 'Stream URL'}
             error={errors.streamUrl?.message}
-            hint={camera?.streamReference ? `Current: ${camera.streamReference}` : type === 'HTTP_MJPEG' ? 'http(s)://192.168.1.20/video.mjpg' : 'rtsp://192.168.1.20:554/stream1 — host must be inside the approved camera networks'}
+            hint={camera?.streamReference ? `Current: ${camera.streamReference}` : type === 'HTTP_MJPEG' ? 'http://192.168.1.20:8080/video — a phone app page such as http://192.168.1.20:8080/ is accepted and the video feed is selected automatically' : 'rtsp://192.168.1.20:554/stream1 — TCP is tried first, then UDP. Host must be inside the approved camera networks'}
           >
             <Input {...register('streamUrl')} className="font-mono" autoComplete="off" />
           </Field>

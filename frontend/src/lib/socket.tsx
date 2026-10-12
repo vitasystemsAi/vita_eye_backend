@@ -13,8 +13,29 @@ interface SocketState {
 
 const SocketContext = createContext<SocketState>({ socket: null, state: 'disconnected' });
 
+/**
+ * Where the live socket connects.
+ * Production serves the socket on the same host as the page (the edge proxy).
+ * Local dev serves the API on port 5000 of whatever host opened the page, so a
+ * phone on Wi-Fi reaches this computer instead of its own localhost.
+ */
 export function socketUrl(): string {
-  return process.env.NEXT_PUBLIC_SOCKET_URL || window.location.origin;
+  if (process.env.NODE_ENV === 'production') return window.location.origin;
+  const url = new URL(window.location.href);
+  const configured = process.env.NEXT_PUBLIC_SOCKET_URL;
+  let port = '5000';
+  if (configured) {
+    try {
+      port = new URL(configured).port || port;
+    } catch {
+      /* keep the default API port */
+    }
+  }
+  url.port = port;
+  url.pathname = '';
+  url.search = '';
+  url.hash = '';
+  return url.origin;
 }
 
 /**

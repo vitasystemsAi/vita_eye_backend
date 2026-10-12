@@ -56,17 +56,18 @@ def test_pipeline_confirms_known_and_unknown_with_temporal_verification(engine):
     assert events[0]["eventType"] == "KNOWN" and events[0]["personId"] == "person-A"
     assert results[0]["events"], "a strong match is confirmed on the first frame"
     assert events[0]["framesObserved"] == 1
-    scene = decode_image(base64.b64decode(events[0]["evidenceJpegB64"]))
-    closeup = decode_image(base64.b64decode(events[0]["evidenceFaceJpegB64"]))
-    assert scene.shape[:2] == frame_a.shape[:2]
-    assert closeup.shape[:2] == (480, 480)
-    assert engine.detect(closeup), "close-up should still contain a detectable face"
+    assert events[0]["evidenceJpegB64"] is None and events[0]["evidenceFaceJpegB64"] is None
 
     frame_b = decode_image(fixture_bytes("person_b_1.jpg"))
     results_b = [pipe.process(frame_b, "org", "cam-2", "v1", POLICY, now=200.0 + i) for i in range(3)]
     events_b = [e for r in results_b for e in r["events"]]
     assert len(events_b) == 1 and events_b[0]["eventType"] == "UNKNOWN"
     assert events_b[0]["personId"] is None
+    scene = decode_image(base64.b64decode(events_b[0]["evidenceJpegB64"]))
+    closeup = decode_image(base64.b64decode(events_b[0]["evidenceFaceJpegB64"]))
+    assert scene.shape[:2] == frame_b.shape[:2]
+    assert closeup.shape[:2] == (480, 480)
+    assert engine.detect(closeup), "close-up should still contain a detectable face"
 
 
 def test_unknown_seen_in_one_frame_is_reported_after_leaving(engine):

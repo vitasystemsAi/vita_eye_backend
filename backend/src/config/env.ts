@@ -78,6 +78,23 @@ const schema = z.object({
   DB_APP_USER_HOST: z.string().default('%'),
 });
 
+/** Dev is opened as either localhost or 127.0.0.1; both must be allowed or Socket.IO is blocked. */
+function withLoopbackAliases(origins: string[]): string[] {
+  const extra: string[] = [];
+  for (const origin of origins) {
+    try {
+      const url = new URL(origin);
+      if (url.hostname === 'localhost') url.hostname = '127.0.0.1';
+      else if (url.hostname === '127.0.0.1') url.hostname = 'localhost';
+      else continue;
+      extra.push(url.origin);
+    } catch {
+      // Ignore malformed entries; the raw list is still used.
+    }
+  }
+  return [...new Set([...origins, ...extra])];
+}
+
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
   const issues = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');
@@ -93,12 +110,31 @@ export const env = {
   rootDir,
   isProduction: raw.NODE_ENV === 'production',
   isTest: raw.NODE_ENV === 'test',
-  frontendOrigins: raw.FRONTEND_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean),
+  frontendOrigins: (raw.NODE_ENV === 'development' ? withLoopbackAliases : (origins: string[]) => origins)(
+    raw.FRONTEND_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean),
+  ),
   evidenceDir: path.isAbsolute(raw.EVIDENCE_STORAGE_DIR)
     ? raw.EVIDENCE_STORAGE_DIR
     : path.resolve(rootDir, raw.EVIDENCE_STORAGE_DIR),
   cookieSecure: raw.COOKIE_SECURE || raw.NODE_ENV === 'production',
   tenantDbPrefix: raw.TENANT_DB_PREFIX || `${raw.DB_NAME}_org_`,
 };
+
+/**
+ * Browser origin allowed to call the API and open the live socket.
+ * Production uses FRONTEND_ORIGIN. Development also allows the console opened by
+ * host name or LAN address (a phone on Wi-Fi, or a tunnel) so the same login can watch.
+ */
+export function isFrontendOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (env.frontendOrigins.includes(origin)) return true;
+  if (env.isProduction) return false;
+  try {
+    const url = new URL(origin);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 export type Env = typeof env;

@@ -27,13 +27,14 @@ export { templateAad };
 export async function loadGallery(organizationId: string) {
   const persons = await RegisteredPerson.findAll({
     where: { organizationId, status: 'ACTIVE', enrollmentStatus: 'ENROLLED', deletedAt: { [Op.is]: null } },
-    attributes: ['id'],
+    attributes: ['id', 'personName'],
     include: [{ model: FaceTemplate.scope('withEmbedding'), as: 'templates', required: true }],
   });
   const templates = persons.flatMap((p) =>
     (p.templates ?? []).map((t) => ({
       templateId: t.id,
       personId: p.id,
+      personName: p.personName,
       modelVersion: t.modelVersion,
       embedding: cipher.decryptEmbedding(t.encryptedEmbedding, templateAad(t.id, p.id)),
     })),

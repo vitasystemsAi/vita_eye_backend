@@ -4,6 +4,7 @@ import { Camera, Organization } from '../models';
 import { recordEvents } from '../services/detections.service';
 import { galleryVersion, loadGallery } from '../services/gallery.service';
 import { NETWORK_TYPES, setCameraStatus } from '../services/ingestion.service';
+import { emitToPreview, previewWatcherCount } from '../sockets/emitter';
 import { forEachTenant, resolveTenant, runInTenant } from '../services/tenancy.service';
 import { AppError, parse } from '../utils/errors';
 import { ok } from '../utils/http';
@@ -76,4 +77,41 @@ export async function cameraStatus(req: Request, res: Response) {
     if (!ignore) await setCameraStatus(camera, body.status, body.error ?? null);
     ok(res, { updated: !ignore });
   });
+}
+
+const previewFace = z.object({
+  trackId: z.string().max(64),
+  bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]),
+  label: z.enum(['KNOWN', 'UNKNOWN', 'UNCERTAIN', 'LOW_QUALITY', 'PENDING']),
+  personId: z.string().uuid().nullable().optional(),
+  personName: z.string().max(160).nullable().optional(),
+  similarity: z.number().min(-1).max(1).nullable().optional(),
+  quality: z.number().min(0).max(1).optional(),
+});
+
+/**
+ * Live picture for a network camera. The AI service probes with no image to learn whether anyone
+ * is watching, and only then uploads a JPEG. Frames are dropped when the preview room is empty.
+ */
+export async function cameraPreview(req: Request, res: Response) {
+  const { id } = parse(z.object({ id: z.string().uuid() }), req.params);
+  const body = parse(
+    z.object({
+      organizationId: z.string().uuid(),
+      imageJpegB64: z.string().max(1_500_000).optional(),
+      faces: z.array(previewFace).max(32).optional(),
+      frameSize: z.tuple([z.number().positive(), z.number().positive()]).optional(),
+    }),
+    req.body,
+  );
+  const viewers = previewWatcherCount(id);
+  if (!body.imageJpegB64 || viewers === 0) {
+    ok(res, { viewers });
+    return;
+  }
+  const jpeg = Buffer.from(body.imageJpegB64, 'base64');
+  if (jpeg.length < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw AppError.badRequest('Preview is not a JPEG');
+  const faces = (body.faces ?? []).map((f) => ({ ...f, personId: f.personId ?? null, personName: f.personName ?? null, similarity: f.similarity ?? null }));
+  emitToPreview(id, 'camera:preview', { cameraId: id, image: jpeg, faces, frameSize: body.frameSize }, { volatile: true });
+  ok(res, { viewers });
 }

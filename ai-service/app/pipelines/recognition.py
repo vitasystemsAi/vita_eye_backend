@@ -119,7 +119,7 @@ class RecognitionPipeline:
                         embedding=emb,
                     )
                 )
-                if policy.capture_evidence and ok and q.score > track.best_quality:
+                if policy.capture_evidence and ok and label != "KNOWN" and q.score > track.best_quality:
                     # Keep a reference only; JPEG encoding is deferred until an event is emitted.
                     track.best_quality = q.score
                     track.evidence_frame = img
@@ -136,6 +136,7 @@ class RecognitionPipeline:
                         "bbox": list(f.bbox),
                         "label": display,
                         "personId": disp_person,
+                        "personName": gallery.name_for(disp_person),
                         "similarity": None if disp_sim is None else round(disp_sim, 4),
                         "quality": round(q.score, 4),
                     }
@@ -146,7 +147,7 @@ class RecognitionPipeline:
 
     def _event(self, track: Track, decision: Decision, at: float, policy: Policy) -> dict:
         scene = face = None
-        if policy.capture_evidence and track.evidence_frame is not None and track.evidence_bbox is not None:
+        if policy.capture_evidence and decision.event_type != "KNOWN" and track.evidence_frame is not None and track.evidence_bbox is not None:
             scene = base64.b64encode(_scene_jpeg(track.evidence_frame, track.evidence_bbox)).decode()
             face = base64.b64encode(_closeup_jpeg(track.evidence_frame, track.evidence_bbox)).decode()
         track.evidence_frame = None

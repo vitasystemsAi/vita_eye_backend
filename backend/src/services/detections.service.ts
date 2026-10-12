@@ -24,7 +24,8 @@ function decodeJpeg(b64: string | null | undefined): Buffer | null {
 }
 
 export function presentEventSummary(e: DetectionEvent) {
-  const all = Array.isArray(e.evidence) ? e.evidence : [];
+  // Registered-person events never expose a photo, including ones stored before this rule.
+  const all = e.eventType === 'KNOWN' || !Array.isArray(e.evidence) ? [] : e.evidence;
   const face = all.find((v) => v.evidenceType === 'FACE');
   const scene = all.find((v) => v.evidenceType === 'SNAPSHOT');
   const evidence = face ?? scene;
@@ -41,7 +42,7 @@ export function presentEventSummary(e: DetectionEvent) {
     person: e.person
       ? { id: e.person.id, name: e.person.personName, referenceId: e.person.referenceId, department: e.person.department, deleted: !!e.person.deletedAt }
       : null,
-    hasEvidence: Array.isArray(e.evidence) ? e.evidence.length > 0 : undefined,
+    hasEvidence: e.eventType === 'KNOWN' ? false : Array.isArray(e.evidence) ? e.evidence.length > 0 : undefined,
     evidenceId: evidence?.id ?? null,
     faceEvidenceId: face?.id ?? null,
     sceneEvidenceId: scene?.id ?? null,
@@ -87,7 +88,7 @@ export async function recordEvents(organizationId: string, camera: Camera, event
 
     const files: Array<{ type: EvidenceType; file: Awaited<ReturnType<typeof writeEvidenceFile>> }> = [];
     try {
-      if (settings.events.captureEvidence) {
+      if (settings.events.captureEvidence && eventType !== 'KNOWN') {
         const images: Array<[EvidenceType, Buffer | null]> = [
           ['FACE', decodeJpeg(ev.evidenceFaceJpegB64)],
           ['SNAPSHOT', decodeJpeg(ev.evidenceJpegB64)],
@@ -241,7 +242,7 @@ export async function getEvent(ctx: AuthContext, id: string) {
     resolvedBy: e.resolver ? { id: e.resolver.id, name: e.resolver.name } : null,
     resolvedAt: e.resolvedAt,
     resolution: e.resolution,
-    evidence: [...(e.evidence ?? [])].sort((a, b) => EVIDENCE_ORDER[a.evidenceType] - EVIDENCE_ORDER[b.evidenceType]).map((v) => ({
+    evidence: (e.eventType === 'KNOWN' ? [] : [...(e.evidence ?? [])]).sort((a, b) => EVIDENCE_ORDER[a.evidenceType] - EVIDENCE_ORDER[b.evidenceType]).map((v) => ({
       id: v.id,
       evidenceType: v.evidenceType,
       contentHash: v.contentHash,

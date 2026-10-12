@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 import type { NextConfig } from 'next';
 
@@ -18,7 +19,7 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "media-src 'self' blob:",
-  `connect-src 'self' ${socketOrigins()} https://*.googleapis.com https://www.gstatic.com${isDev ? ' ws: http://localhost:*' : ''}`,
+  `connect-src 'self' ${socketOrigins()} https://*.googleapis.com https://www.gstatic.com${isDev ? ' ws: wss: http://localhost:* http://127.0.0.1:* http://*:5000 ws://*:5000' : ''}`,
   "worker-src 'self'",
   "frame-ancestors 'none'",
   "base-uri 'self'",
@@ -26,8 +27,19 @@ const csp = [
   "object-src 'none'",
 ].join('; ');
 
+function devOrigins(): string[] {
+  const hosts = new Set(['localhost', '127.0.0.1']);
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const net of list ?? []) {
+      if (net.family === 'IPv4' && !net.internal) hosts.add(net.address);
+    }
+  }
+  return [...hosts];
+}
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  allowedDevOrigins: devOrigins(),
   poweredByHeader: false,
   output: 'standalone',
   turbopack: { root: path.join(__dirname) },

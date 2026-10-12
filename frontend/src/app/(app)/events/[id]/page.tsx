@@ -76,8 +76,10 @@ function EventDetailView() {
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
         <Card title="Evidence" className="xl:col-span-3" description={e.evidence[0] ? `Encrypted at rest · expires ${fmtDateTime(e.evidence[0].expiresAt)}` : undefined}>
           <div className="p-5">
-            {e.evidence.length === 0 ? (
-              <p className="text-sm text-ink-400">No evidence image was captured for this event.</p>
+            {e.eventType === 'KNOWN' || e.evidence.length === 0 ? (
+              <p className="text-sm text-ink-400">
+                {e.eventType === 'KNOWN' ? 'Evidence images are not stored for a registered person.' : 'No evidence image was captured for this event.'}
+              </p>
             ) : can('evidence:view') ? (
               <EvidenceViewer evidence={e.evidence} />
             ) : (

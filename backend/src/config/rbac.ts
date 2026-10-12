@@ -65,7 +65,7 @@ export const ROLES: Record<RoleName, { description: string; permissions: Permiss
   },
   PREVIEW: {
     description: 'Kiosk-style live monitoring with real-time detections only',
-    permissions: ['persons:view', 'cameras:view', 'cameras:monitor', 'events:view'],
+    permissions: ['persons:view', 'cameras:view', 'cameras:monitor', 'events:view', 'evidence:view'],
   },
 };
 

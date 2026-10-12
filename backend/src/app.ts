@@ -3,7 +3,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { pinoHttp } from 'pino-http';
-import { env } from './config/env';
+import { env, isFrontendOrigin } from './config/env';
 import { logger } from './config/logger';
 import { csrfProtection } from './middleware/csrf';
 import { apiLimiter } from './middleware/rateLimit';
@@ -25,7 +25,7 @@ export function createApp() {
   );
   app.use(
     cors({
-      origin: (origin, cb) => cb(null, !origin || env.frontendOrigins.includes(origin)),
+      origin: (origin, cb) => cb(null, isFrontendOrigin(origin)),
       credentials: true,
       methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
       allowedHeaders: ['Content-Type', 'X-CSRF-Token'],

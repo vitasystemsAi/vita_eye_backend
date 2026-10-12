@@ -9,7 +9,8 @@ import { useToast } from '@/components/ui/toast';
 import { errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useMonitor, type MonitorStatus } from '@/lib/monitor';
-import type { Camera } from '@/lib/types';
+import { useSocket } from '@/lib/socket';
+import type { Camera, FrameFace } from '@/lib/types';
 
 const PILL: Partial<Record<MonitorStatus, { text: string; className: string }>> = {
   running: { text: 'LIVE', className: 'bg-red-600/90' },
@@ -17,8 +18,252 @@ const PILL: Partial<Record<MonitorStatus, { text: string; className: string }>> 
   paused: { text: 'PAUSED · OUTSIDE SCHEDULE', className: 'bg-sky-700/90' },
 };
 
-export function BrowserMonitor({ cameras, onCameraChange }: { cameras: Camera[]; onCameraChange: (c: Camera) => void }) {
-  const { can } = useAuth();
+function FaceOverlay({ frameSize, faces, fit }: { frameSize: [number, number]; faces: FrameFace[]; fit: 'stretch' | 'contain' }) {
+  return (
+    <svg
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      viewBox={`0 0 ${frameSize[0]} ${frameSize[1]}`}
+      preserveAspectRatio={fit === 'contain' ? 'xMidYMid meet' : 'none'}
+    >
+      {faces.map((f) => {
+        const [x, y, w, h] = f.bbox;
+        const color = FACE_COLORS[f.label];
+        const label = f.label === 'KNOWN' && f.personName ? f.personName : FACE_LABELS[f.label];
+        const sim = f.similarity !== null && f.label !== 'LOW_QUALITY' ? ` ${f.similarity.toFixed(2)}` : '';
+        const fs = Math.max(12, frameSize[0] / 55);
+        return (
+          <g key={f.trackId}>
+            <rect x={x} y={y} width={w} height={h} fill="none" stroke={color} strokeWidth={Math.max(2, frameSize[0] / 320)} rx="4" />
+            <rect x={x} y={Math.max(0, y - fs * 1.6)} width={Math.max(w, (label.length + sim.length) * fs * 0.62)} height={fs * 1.5} fill={color} opacity="0.9" rx="3" />
+            <text x={x + fs * 0.3} y={Math.max(fs * 1.1, y - fs * 0.45)} fontSize={fs} fill="#05080f" fontWeight="600" fontFamily="system-ui, sans-serif">
+              {label}
+              {sim}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function jpegBlob(image: unknown): Blob | null {
+  if (image instanceof ArrayBuffer) return new Blob([image], { type: 'image/jpeg' });
+  if (ArrayBuffer.isView(image)) {
+    const view = new Uint8Array(image.buffer, image.byteOffset, image.byteLength);
+    return new Blob([view], { type: 'image/jpeg' });
+  }
+  return null;
+}
+
+interface PreviewFrame {
+  cameraId: string;
+  image?: ArrayBuffer | Uint8Array;
+  faces?: FrameFace[];
+  frameSize?: [number, number];
+}
+
+/** Shows the JPEG the monitoring session is already sending, without opening this device's camera. */
+export function RemotePreview({
+  cameras,
+  fill = false,
+  embedded = false,
+  bare = false,
+}: {
+  cameras: Camera[];
+  fill?: boolean;
+  embedded?: boolean;
+  /** Fill the parent and leave the name to the surrounding tile. */
+  bare?: boolean;
+}) {
+  const { socket } = useSocket();
+  const live = cameras.filter((c) => c.monitoringEnabled);
+  const [manualId, setManualId] = useState<string | null>(null);
+  const camera = live.length === 1 ? live[0] : (manualId && cameras.find((c) => c.id === manualId)) || live[0] || cameras[0];
+  const [hasFrame, setHasFrame] = useState(false);
+  const [watching, setWatching] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const seq = useRef(0);
+
+  const [faces, setFaces] = useState<FrameFace[]>([]);
+  const [frameSize, setFrameSize] = useState<[number, number] | null>(null);
+
+  const clearFrame = useCallback(() => {
+    seq.current += 1;
+    const canvas = canvasRef.current;
+    canvas?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+    setHasFrame(false);
+    setFaces([]);
+    setFrameSize(null);
+  }, []);
+
+  useEffect(() => {
+    if (!socket || !camera) return;
+    const cameraId = camera.id;
+    let alive = true;
+    const watch = () => {
+      socket.emit('preview:watch', cameraId, (res: { ok?: boolean }) => {
+        if (alive) setWatching(Boolean(res?.ok));
+      });
+    };
+    const onFrame = (payload: PreviewFrame) => {
+      if (!alive || payload.cameraId !== cameraId || !payload.image) return;
+      const blob = jpegBlob(payload.image);
+      if (!blob) return;
+      const ticket = ++seq.current;
+      void createImageBitmap(blob).then((bitmap) => {
+        if (!alive || ticket !== seq.current) {
+          bitmap.close();
+          return;
+        }
+        const canvas = canvasRef.current;
+        if (!canvas) {
+          bitmap.close();
+          return;
+        }
+        if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+        }
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        setHasFrame(true);
+        if (payload.faces && payload.frameSize) {
+          setFaces(payload.faces);
+          setFrameSize(payload.frameSize);
+        }
+      }).catch(() => undefined);
+    };
+    const onStatus = (payload: { cameraId: string; monitoring: boolean }) => {
+      if (!alive || payload.cameraId !== cameraId || payload.monitoring) return;
+      clearFrame();
+    };
+    watch();
+    socket.on('connect', watch);
+    socket.on('camera:preview', onFrame);
+    socket.on('camera:preview:status', onStatus);
+    return () => {
+      alive = false;
+      socket.off('connect', watch);
+      socket.off('camera:preview', onFrame);
+      socket.off('camera:preview:status', onStatus);
+      socket.emit('preview:unwatch', cameraId);
+      clearFrame();
+    };
+  }, [socket, camera?.id, clearFrame]);
+
+  useEffect(() => {
+    if (!camera?.monitoringEnabled) clearFrame();
+  }, [camera?.monitoringEnabled, clearFrame]);
+
+  if (!camera) return <div className="absolute inset-0 bg-black" />;
+
+  return (
+    <div className={fill || bare ? 'absolute inset-0 bg-black' : 'relative aspect-video w-full overflow-hidden bg-black'}>
+      <canvas ref={canvasRef} className={`absolute inset-0 h-full w-full object-contain ${hasFrame ? '' : 'hidden'}`} />
+      {hasFrame && frameSize && <FaceOverlay frameSize={frameSize} faces={faces} fit="contain" />}
+      {hasFrame && !bare && (
+        <span className="absolute top-4 left-4 z-10 inline-flex items-center gap-1.5 rounded-full bg-red-600/90 px-3 py-1.5 text-sm font-semibold text-white">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> LIVE · {camera.cameraName}
+        </span>
+      )}
+      {!hasFrame && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+          <CameraIcon className={embedded || bare ? 'h-8 w-8 text-ink-500' : 'h-12 w-12 text-ink-400'} />
+          {!embedded && !bare && <p className="text-lg font-medium text-ink-100">{camera.cameraName}</p>}
+          {!bare && (
+            <p className="max-w-md text-sm text-ink-400">
+              {camera.monitoringEnabled
+                ? watching
+                  ? 'Waiting for the live picture…'
+                  : 'Connecting to the live picture…'
+                : 'This screen shows the camera an administrator is monitoring. It does not use this computer’s webcam.'}
+            </p>
+          )}
+        </div>
+      )}
+      {!bare && cameras.length > 1 && (
+        <div className="absolute bottom-4 left-4 z-10 w-64">
+          <Field label="Camera">
+            <Select
+              value={camera.id}
+              onChange={(e) => setManualId(e.target.value)}
+            >
+              {cameras.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.cameraName} — {c.location}
+                  {c.monitoringEnabled ? ' (live)' : ''}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Local webcam picture for one browser-camera tile. Controls live on the camera wall. */
+export function BrowserStage({ camera }: { camera: Camera }) {
+  const monitor = useMonitor();
+  const { session, status, stream, faces, frameSize } = monitor;
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const mine = session?.cameraId === camera.id;
+  const showVideo = mine && Boolean(stream) && status !== 'other-tab';
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.srcObject = mine ? stream : null;
+    if (mine && stream) void video.play().catch(() => undefined);
+  }, [mine, stream]);
+
+  return (
+    <div className="absolute inset-0 bg-black">
+      <video ref={videoRef} playsInline muted className={`absolute inset-0 h-full w-full object-contain ${showVideo ? '' : 'hidden'}`} />
+      {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={faces} fit="contain" />}
+      {!showVideo && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center text-ink-500">
+          <CameraIcon className="h-8 w-8" />
+          {mine && status === 'other-tab' && <p className="text-xs text-ink-300">Live in another tab</p>}
+          {mine && status !== 'other-tab' && status !== 'idle' && <p className="text-xs text-ink-300">Waiting for this camera…</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function emptyCameraCopy(role: string | undefined, siteScope: string[] | null | undefined): { title: string; body: string } {
+  if (siteScope?.length) {
+    return {
+      title: 'No camera for this screen',
+      body: `This account only sees cameras in ${siteScope.join(', ')}. None of those sites has an active browser camera.`,
+    };
+  }
+  if (role === 'PREVIEW') {
+    return {
+      title: 'No camera for this screen',
+      body: 'An administrator needs to add an active browser camera before this screen can show video.',
+    };
+  }
+  return {
+    title: 'No active browser cameras',
+    body: 'Create a camera of type "Browser" in Camera Management to monitor using this computer\'s webcam.',
+  };
+}
+
+export function BrowserMonitor({
+  cameras,
+  onCameraChange,
+  variant = 'default',
+}: {
+  cameras: Camera[];
+  onCameraChange: (c: Camera) => void;
+  variant?: 'default' | 'kiosk' | 'tile';
+}) {
+  const { can, user } = useAuth();
+  const kiosk = variant === 'kiosk';
+  const tile = variant === 'tile';
   const notify = useToast();
   const monitor = useMonitor();
   const { session, status, stream, faces, frameSize, stats } = monitor;
@@ -62,6 +307,23 @@ export function BrowserMonitor({ cameras, onCameraChange }: { cameras: Camera[];
     }
   }
 
+  const empty = emptyCameraCopy(user?.role, user?.siteScope);
+
+  if (kiosk) {
+    if (!browserCams.length) {
+      return (
+        <div className="absolute inset-0 flex items-center justify-center bg-black p-8">
+          <div className="flex flex-col items-center gap-2 text-center">
+            <CameraIcon className="h-8 w-8 text-ink-400" />
+            <p className="text-sm text-ink-200">{empty.title}</p>
+            <p className="max-w-sm text-xs text-ink-400">{empty.body}</p>
+          </div>
+        </div>
+      );
+    }
+    return <RemotePreview cameras={browserCams} fill />;
+  }
+
   if (!can('cameras:monitor') && !active) {
     return <p className="p-5 text-sm text-ink-400">Your role can view camera status but cannot stream from this device.</p>;
   }
@@ -70,8 +332,8 @@ export function BrowserMonitor({ cameras, onCameraChange }: { cameras: Camera[];
     return (
       <div className="flex flex-col items-center gap-2 p-10 text-center">
         <CameraIcon className="h-8 w-8 text-ink-400" />
-        <p className="text-sm text-ink-200">No active browser cameras</p>
-        <p className="max-w-sm text-xs text-ink-400">Create a camera of type &quot;Browser&quot; in Camera Management to monitor using this computer&apos;s webcam.</p>
+        <p className="text-sm text-ink-200">{empty.title}</p>
+        <p className="max-w-sm text-xs text-ink-400">{empty.body}</p>
       </div>
     );
   }
@@ -79,9 +341,10 @@ export function BrowserMonitor({ cameras, onCameraChange }: { cameras: Camera[];
   const showVideo = active && Boolean(stream) && status !== 'other-tab';
   const pill = PILL[status];
   const problem = active ? monitor.error : (startError ?? monitor.notice);
+  const waitingText = status === 'other-tab' ? 'Monitoring is running in another tab on this device' : active ? 'Waiting for the camera…' : 'Camera preview appears here';
 
   return (
-    <div className="space-y-4 p-5">
+    <div className={tile ? 'space-y-3 p-4' : 'space-y-4 p-5'}>
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-[200px] flex-1">
           <Field label="Camera record">
@@ -120,33 +383,11 @@ export function BrowserMonitor({ cameras, onCameraChange }: { cameras: Camera[];
 
       <div className="relative overflow-hidden rounded-xl border border-ink-700 bg-black">
         <video ref={videoRef} playsInline muted className={`block h-auto w-full ${showVideo ? '' : 'hidden'}`} />
-        {showVideo && frameSize && status === 'running' && (
-          <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${frameSize[0]} ${frameSize[1]}`} preserveAspectRatio="none">
-            {faces.map((f) => {
-              const [x, y, w, h] = f.bbox;
-              const color = FACE_COLORS[f.label];
-              const label = f.label === 'KNOWN' && f.personName ? f.personName : FACE_LABELS[f.label];
-              const sim = f.similarity !== null && f.label !== 'LOW_QUALITY' ? ` ${f.similarity.toFixed(2)}` : '';
-              const fs = Math.max(12, frameSize[0] / 55);
-              return (
-                <g key={f.trackId}>
-                  <rect x={x} y={y} width={w} height={h} fill="none" stroke={color} strokeWidth={Math.max(2, frameSize[0] / 320)} rx="4" />
-                  <rect x={x} y={Math.max(0, y - fs * 1.6)} width={Math.max(w, (label.length + sim.length) * fs * 0.62)} height={fs * 1.5} fill={color} opacity="0.9" rx="3" />
-                  <text x={x + fs * 0.3} y={Math.max(fs * 1.1, y - fs * 0.45)} fontSize={fs} fill="#05080f" fontWeight="600" fontFamily="system-ui, sans-serif">
-                    {label}
-                    {sim}
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
-        )}
+        {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={faces} fit="stretch" />}
         {!showVideo && (
           <div className="flex aspect-video flex-col items-center justify-center gap-2 text-center text-ink-400">
             <CameraIcon className="h-10 w-10" />
-            <p className="text-sm">
-              {status === 'other-tab' ? 'Monitoring is running in another tab on this device' : active ? 'Waiting for the camera…' : 'Camera preview appears here'}
-            </p>
+            <p className="text-sm">{waitingText}</p>
           </div>
         )}
         {showVideo && pill && (
@@ -179,9 +420,11 @@ export function BrowserMonitor({ cameras, onCameraChange }: { cameras: Camera[];
         <Badge>Faces {faces.length}</Badge>
         <AlertSoundToggle withLabel className="ml-auto py-1" />
       </div>
-      <p className="text-xs text-ink-400">
-        Once started, monitoring keeps running on this device — through sign-out, session expiry, page changes and network drops — until Stop is pressed, and resumes automatically if the page is reloaded. Frames are analysed on the server and are not stored; only confirmed events are recorded with an encrypted face close-up and full photo. Keep this browser open; closing it pauses monitoring until it is reopened.
-      </p>
+      {!tile && (
+        <p className="text-xs text-ink-400">
+          Once started, monitoring keeps running on this device — through sign-out, session expiry, page changes and network drops — until Stop is pressed, and resumes automatically if the page is reloaded. Frames are analysed on the server and are not stored; only confirmed events are recorded with an encrypted face close-up and full photo. Keep this browser open; closing it pauses monitoring until it is reopened.
+        </p>
+      )}
     </div>
   );
 }

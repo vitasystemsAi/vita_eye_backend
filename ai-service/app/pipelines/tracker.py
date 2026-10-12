@@ -64,12 +64,16 @@ class Track:
     evidence_bbox: Optional[tuple[int, int, int, int]] = None
 
     def display_label(self) -> tuple[str, Optional[str], Optional[float]]:
-        """Most recent usable label for live overlays (not a confirmed decision)."""
-        for o in reversed(self.observations):
-            if o.label != "LOW_QUALITY":
-                return o.label, o.person_id, o.similarity
-        last = self.observations[-1] if self.observations else None
-        return ("LOW_QUALITY" if last else "PENDING"), None, None
+        """Stable identity for the live overlay, taken from the recent frames of this track."""
+        recent = [o for o in self.observations if o.label != "LOW_QUALITY"][-8:]
+        if not recent:
+            last = self.observations[-1] if self.observations else None
+            return ("LOW_QUALITY" if last else "PENDING"), None, None
+        votes = Counter((o.label, o.person_id if o.label == "KNOWN" else None) for o in recent)
+        (label, person_id), _count = votes.most_common(1)[0]
+        agreeing = [o for o in recent if o.label == label and (label != "KNOWN" or o.person_id == person_id)]
+        similarity = agreeing[-1].similarity
+        return label, person_id, similarity
 
 
 def iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:

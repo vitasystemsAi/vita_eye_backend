@@ -12,7 +12,7 @@ export function buildSequelize(database: string | null = env.DB_NAME, user = env
     logging: env.LOG_LEVEL === 'debug' ? (sql: string) => logger.debug(sql) : false,
     pool: { max: env.DB_POOL_MAX, min: 0, idle: 10_000, acquire: 30_000 },
     dialectOptions: {
-      ...(env.DB_SSL ? { ssl: { rejectUnauthorized: true } } : {}),
+      ...(env.DB_SSL ? { ssl: 'Amazon RDS' } : {}),
       dateStrings: false,
       supportBigNumbers: true,
     },

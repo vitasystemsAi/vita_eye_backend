@@ -22,6 +22,7 @@ class Gallery:
     matrix: np.ndarray = field(default_factory=lambda: np.zeros((0, 128), dtype=np.float32))
     template_person: np.ndarray = field(default_factory=lambda: np.zeros((0,), dtype=np.int32))
     person_ids: list[str] = field(default_factory=list)
+    person_names: dict[str, str] = field(default_factory=dict)
     loaded_at: float = field(default_factory=time.time)
 
     @property
@@ -40,9 +41,15 @@ class Gallery:
         second = float(per_person[order[1]]) if len(order) > 1 else None
         return self.person_ids[best], float(per_person[best]), second
 
+    def name_for(self, person_id: Optional[str]) -> Optional[str]:
+        if not person_id:
+            return None
+        return self.person_names.get(person_id)
+
 
 def build_gallery(version: str, templates: list[dict], model_version: str) -> Gallery:
     person_index: dict[str, int] = {}
+    names: dict[str, str] = {}
     rows: list[np.ndarray] = []
     owners: list[int] = []
     skipped = 0
@@ -55,7 +62,11 @@ def build_gallery(version: str, templates: list[dict], model_version: str) -> Ga
         if emb.shape != (128,) or n == 0:
             skipped += 1
             continue
-        idx = person_index.setdefault(t["personId"], len(person_index))
+        person_id = t["personId"]
+        idx = person_index.setdefault(person_id, len(person_index))
+        raw_name = t.get("personName")
+        if isinstance(raw_name, str) and raw_name.strip():
+            names.setdefault(person_id, raw_name.strip())
         rows.append(emb / n)
         owners.append(idx)
     if skipped:
@@ -64,7 +75,13 @@ def build_gallery(version: str, templates: list[dict], model_version: str) -> Ga
     persons = [None] * len(person_index)
     for pid, i in person_index.items():
         persons[i] = pid
-    return Gallery(version=version, matrix=matrix, template_person=np.asarray(owners, dtype=np.int32), person_ids=persons)
+    return Gallery(
+        version=version,
+        matrix=matrix,
+        template_person=np.asarray(owners, dtype=np.int32),
+        person_ids=persons,
+        person_names=names,
+    )
 
 
 class GalleryStore:
