@@ -1,10 +1,11 @@
 import type { Request, Response } from 'express';
 import { authOf } from '../middleware/auth';
 import * as persons from '../services/persons.service';
-import { parse } from '../utils/errors';
+import { guidePose, type PoseTarget } from '../services/ai.client';
+import { AppError, parse } from '../utils/errors';
 import { clientIp, created, ok } from '../utils/http';
 import { idParam } from '../validators/users.validators';
-import { createPersonSchema, enrollSchema, listPersonsSchema, updatePersonSchema } from '../validators/persons.validators';
+import { createPersonSchema, enrollSchema, listPersonsSchema, poseTargetSchema, setStatusSchema, updatePersonSchema } from '../validators/persons.validators';
 
 export async function list(req: Request, res: Response) {
   const { items, meta } = await persons.listPersons(authOf(req), parse(listPersonsSchema, req.query));
@@ -23,6 +24,13 @@ export async function update(req: Request, res: Response) {
   ok(res, await persons.updatePerson(authOf(req), parse(idParam, req.params).id, parse(updatePersonSchema, req.body), clientIp(req)));
 }
 
+export async function poseGuide(req: Request, res: Response) {
+  const file = req.file;
+  if (!file) throw AppError.badRequest('Image is required');
+  const { target } = parse(poseTargetSchema, req.body);
+  ok(res, await guidePose(file.buffer, file.mimetype || 'image/jpeg', target as PoseTarget));
+}
+
 export async function enroll(req: Request, res: Response) {
   const consent = parse(enrollSchema, req.body);
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
@@ -38,12 +46,21 @@ export async function enroll(req: Request, res: Response) {
   );
 }
 
+export async function changeStatus(req: Request, res: Response) {
+  const body = parse(setStatusSchema, req.body);
+  ok(res, await persons.setStatus(authOf(req), parse(idParam, req.params).id, body.status, clientIp(req)));
+}
+
 export async function deactivate(req: Request, res: Response) {
   ok(res, await persons.setActive(authOf(req), parse(idParam, req.params).id, false, clientIp(req)));
 }
 
 export async function activate(req: Request, res: Response) {
   ok(res, await persons.setActive(authOf(req), parse(idParam, req.params).id, true, clientIp(req)));
+}
+
+export async function cancel(req: Request, res: Response) {
+  ok(res, await persons.cancelRegistration(authOf(req), parse(idParam, req.params).id, clientIp(req)));
 }
 
 export async function remove(req: Request, res: Response) {

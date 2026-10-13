@@ -147,6 +147,31 @@ def test_unknown_confirmed_then_duplicate_suppressed_by_memory():
     assert other is not None and other.event_type == "UNKNOWN"
 
 
+def test_crossed_faces_keep_their_own_tracks():
+    tr = CameraTracker()
+    a = unit(1)
+    b = unit(2)
+    b = b - a * float(a @ b)
+    b = b / np.linalg.norm(b)
+    left, right = (0, 0, 80, 80), (400, 0, 80, 80)
+    first, second = tr.assign([left, right], 0.0, P, [a, b])
+    first.observations.append(Observation(0.0, "KNOWN", "A", 0.8, 0.9, a))
+    second.observations.append(Observation(0.0, "KNOWN", "B", 0.8, 0.9, b))
+    # They have swapped places. The boxes now sit on each other's previous track.
+    moved_a, moved_b = tr.assign([right, left], 0.2, P, [a, b])
+    assert moved_a.id == first.id
+    assert moved_b.id == second.id
+
+
+def test_shown_name_does_not_flip_on_one_frame():
+    tr = CameraTracker()
+    track, _ = feed(tr, "KNOWN", 0.0, "p1", sim=0.7)
+    assert track.display_label()[:2] == ("KNOWN", "p1")
+    track.observations.append(Observation(0.2, "KNOWN", "p2", 0.7, 0.9, None))
+    track.observations.append(Observation(0.3, "KNOWN", "p1", 0.7, 0.9, None))
+    assert track.display_label()[:2] == ("KNOWN", "p1")
+
+
 def test_observations_outside_window_are_ignored():
     tr = CameraTracker()
     feed(tr, "KNOWN", 0.0, "p1")

@@ -42,6 +42,14 @@ def test_enroll_rejects_image_without_face(client):
     assert r.json()["detail"]["reasons"] == ["NO_FACE"]
 
 
+def test_pose_guide_reports_no_face(client):
+    r = client.post("/v1/enroll/pose", headers=AUTH, files={"image": ("x.jpg", blank_jpeg(), "image/jpeg")}, data={"target": "left"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["faces"] == 0 and body["matched"] is False and body["issues"] == ["NO_FACE"]
+    assert "left" in body["nudge"] or body["nudge"] == "Look into the guide"
+
+
 def test_enroll_rejects_corrupt_image(client):
     r = client.post("/v1/enroll/embed", headers=AUTH, files={"image": ("x.jpg", b"not an image", "image/jpeg")})
     assert r.status_code == 400

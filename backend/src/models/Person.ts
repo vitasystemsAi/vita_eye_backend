@@ -10,7 +10,8 @@ export class RegisteredPerson extends Model<InferAttributes<RegisteredPerson>, I
   declare personName: string;
   declare referenceId: string;
   declare department: string | null;
-  declare status: CreationOptional<'ACTIVE' | 'INACTIVE'>;
+  declare status: CreationOptional<'ACTIVE' | 'SUSPENDED' | 'INACTIVE'>;
+  declare statusChangedAt: CreationOptional<Date>;
   declare enrollmentStatus: CreationOptional<EnrollmentStatus>;
   declare legalBasis: CreationOptional<string | null>;
   declare consentReference: CreationOptional<string | null>;
@@ -30,7 +31,8 @@ RegisteredPerson.init(
     personName: { type: DataTypes.STRING(160), allowNull: false },
     referenceId: { type: DataTypes.STRING(64), allowNull: false },
     department: { type: DataTypes.STRING(120), allowNull: true },
-    status: { type: DataTypes.ENUM('ACTIVE', 'INACTIVE'), allowNull: false, defaultValue: 'ACTIVE' },
+    status: { type: DataTypes.ENUM('ACTIVE', 'SUSPENDED', 'INACTIVE'), allowNull: false, defaultValue: 'ACTIVE' },
+    statusChangedAt: { type: DataTypes.DATE(3), allowNull: false, defaultValue: DataTypes.NOW },
     enrollmentStatus: {
       type: DataTypes.ENUM('PENDING', 'ENROLLED', 'FAILED', 'REVOKED'),
       allowNull: false,

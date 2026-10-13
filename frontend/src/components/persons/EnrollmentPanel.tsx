@@ -55,6 +55,10 @@ export function EnrollmentPanel({ person, onEnrolled }: { person: PersonDetail; 
       setServerError('Capture or upload at least one photo.');
       return;
     }
+    if (images.some((img) => img.quality?.warnings.length)) {
+      setServerError('Replace every photo that has a warning. A blurry, dark, or small enrollment is how one person later shows up under another name.');
+      return;
+    }
     const form = new FormData();
     images.forEach((img, i) => form.append('images', img.file, img.file.name || `image-${i}.jpg`));
     form.append('legalBasis', values.legalBasis);
@@ -82,10 +86,14 @@ export function EnrollmentPanel({ person, onEnrolled }: { person: PersonDetail; 
   }
 
   const inactive = person.status !== 'ACTIVE';
+  const holdReason = person.status === 'SUSPENDED'
+    ? 'This person is suspended and is not in recognition. Make them active before enrolling biometric data.'
+    : 'This person is inactive and is not in recognition. Retrieve them to active before enrolling biometric data.';
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-6" noValidate>
-      {inactive && <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">This person is inactive. Activate the registration before enrolling biometric data.</p>}
+      {inactive && <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">{holdReason}</p>}
+      <p className="text-sm text-ink-300">Align the face to the guide and keep the eyes level. Each photo is checked against the others and against everyone already enrolled, and monitoring will not attach this name unless that face is the clear match.</p>
       <FaceCapture images={images} onChange={setImages} />
 
       <div className="rounded-xl border border-ink-700 bg-ink-850/60 p-4">

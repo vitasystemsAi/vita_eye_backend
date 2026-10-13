@@ -23,10 +23,8 @@ const blockedCidrs = parseCidrs(env.CAMERA_BLOCKED_NETWORKS);
 const inFlight = new Set<string>();
 const lastSeenWrite = new Map<string, number>();
 const lastPreviewAt = new Map<string, number>();
-const lastOverlay = new Map<string, { faces: FrameAck['faces']; frameSize: FrameAck['frameSize']; at: number }>();
-const OVERLAY_HOLD_MS = 1_500;
-/** Cap how often an unannotated picture is mirrored. Annotated results are not throttled. */
-const PREVIEW_INTERVAL_MS = 100;
+/** How often a recognized frame is mirrored. The picture and its boxes always travel together. */
+const PREVIEW_INTERVAL_MS = 80;
 const MAX_FRAME_BYTES = 2 * 1024 * 1024;
 const BROWSER_OFFLINE_AFTER_MS = 45_000;
 
@@ -89,22 +87,13 @@ export interface FrameAck {
   alerts?: Array<{ id: string; eventType: 'UNKNOWN' | 'UNCERTAIN' }>;
 }
 
-/** Forwards the JPEG already captured to Live Preview viewers. The last identities stay on later frames. */
-function relayPreview(cameraId: string, jpeg: Buffer, annotated?: Pick<FrameAck, 'faces' | 'frameSize'>) {
+/** Forwards one recognized JPEG. Boxes are only sent with the picture they were measured on. */
+function relayPreview(cameraId: string, jpeg: Buffer, annotated: Pick<FrameAck, 'faces' | 'frameSize'>) {
   const now = Date.now();
-  let faces = annotated?.faces;
-  let frameSize = annotated?.frameSize;
-  if (faces && frameSize) lastOverlay.set(cameraId, { faces, frameSize, at: now });
-  else {
-    const held = lastOverlay.get(cameraId);
-    if (held && now - held.at < OVERLAY_HOLD_MS) {
-      faces = held.faces;
-      frameSize = held.frameSize;
-    }
-  }
-  if (!annotated && now - (lastPreviewAt.get(cameraId) ?? 0) < PREVIEW_INTERVAL_MS) return;
+  if (!annotated.faces || !annotated.frameSize) return;
+  if (now - (lastPreviewAt.get(cameraId) ?? 0) < PREVIEW_INTERVAL_MS) return;
   lastPreviewAt.set(cameraId, now);
-  const payload = { cameraId, image: jpeg, faces, frameSize };
+  const payload = { cameraId, image: jpeg, faces: annotated.faces, frameSize: annotated.frameSize };
   rememberPreview(cameraId, payload);
   if (previewWatcherCount(cameraId) === 0) return;
   emitToPreview(cameraId, 'camera:preview', payload, { volatile: true });
@@ -128,7 +117,6 @@ export async function handleBrowserFrame(ctx: AuthContext, cameraId: string, jpe
   if (ticketId !== undefined && camera.monitorTicketId !== ticketId) return { ok: false, error: 'MONITORING_NOT_STARTED' };
   if (!isWithinSchedule(camera.schedule)) return { ok: false, error: 'OUTSIDE_SCHEDULE' };
   if (inFlight.has(cameraId) || !inferenceSlots.tryAcquire()) {
-    relayPreview(cameraId, jpeg);
     return { ok: true, dropped: true };
   }
 
@@ -140,7 +128,6 @@ export async function handleBrowserFrame(ctx: AuthContext, cameraId: string, jpe
       await setCameraStatus(camera, 'ONLINE');
     }
     const settings = await getSettings(camera.organizationId);
-    relayPreview(cameraId, jpeg);
     const result = await processFrame(jpeg, {
       organizationId: camera.organizationId,
       cameraId,
@@ -156,7 +143,10 @@ export async function handleBrowserFrame(ctx: AuthContext, cameraId: string, jpe
       const persons = await RegisteredPerson.findAll({ where: { id: { [Op.in]: ids }, organizationId: ctx.organizationId }, attributes: ['id', 'personName'] });
       names = new Map(persons.map((p) => [p.id, p.personName]));
     }
-    const faces = result.faces.map((f) => ({ ...f, personName: f.personId ? (names.get(f.personId) ?? null) : null }));
+    const faces = result.faces.map((f) => {
+      const personId = f.label === 'KNOWN' ? f.personId : null;
+      return { ...f, personId, personName: personId ? (names.get(personId) ?? null) : null };
+    });
     relayPreview(cameraId, jpeg, { faces, frameSize: result.frameSize });
     return {
       ok: true,

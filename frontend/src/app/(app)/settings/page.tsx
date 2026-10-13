@@ -39,7 +39,7 @@ type NumKey<T> = { [K in keyof T]: T[K] extends number ? K : never }[keyof T];
 const RECOGNITION_FIELDS: Array<{ key: NumKey<RecognitionSettings>; label: string; step: number; min: number; max: number; hint: string }> = [
   { key: 'knownThreshold', label: 'Known match threshold', step: 0.01, min: 0, max: 1, hint: 'Cosine similarity required to label a face as a registered person' },
   { key: 'unknownThreshold', label: 'Unknown threshold', step: 0.01, min: 0, max: 1, hint: 'Below this the face is unrecognized; between the two it is uncertain' },
-  { key: 'matchMargin', label: 'Match margin', step: 0.01, min: 0, max: 0.5, hint: 'Required lead over the second-best person (prevents look-alike confusion)' },
+  { key: 'matchMargin', label: 'Match margin', step: 0.01, min: 0, max: 0.5, hint: 'Lead the best person must have over the next one. This widens on its own as more people are enrolled, so a lookalike is left as Uncertain instead of labelled with the wrong name.' },
   { key: 'minFaceSize', label: 'Minimum face size (px)', step: 1, min: 20, max: 1000, hint: 'Smaller faces are treated as low quality' },
   { key: 'minQuality', label: 'Minimum quality score', step: 0.05, min: 0, max: 1, hint: 'Composite of sharpness, pose, lighting, size, detector confidence' },
   { key: 'minDetectionScore', label: 'Minimum detector confidence', step: 0.01, min: 0.3, max: 1, hint: 'YuNet face detection score' },

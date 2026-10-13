@@ -1,4 +1,4 @@
-import type { CameraStatus, DeliveryStatus, EnrollmentStatus, EventType, FaceLabel, ReviewStatus } from '@/lib/types';
+import type { CameraStatus, DeliveryStatus, EnrollmentStatus, EventType, FaceLabel, PersonStatus, ReviewStatus } from '@/lib/types';
 import { Badge } from './ui/primitives';
 
 // Wording is deliberately neutral: an unrecognized face is not an accusation.
@@ -44,6 +44,16 @@ export function CameraStatusBadge({ status, monitoring }: { status: CameraStatus
       {monitoring && status !== 'DISABLED' && <Badge tone="blue">Monitoring</Badge>}
     </span>
   );
+}
+
+export function PersonStatusBadge({ status }: { status: PersonStatus }) {
+  const map: Record<PersonStatus, ['green' | 'amber' | 'neutral', string]> = {
+    ACTIVE: ['green', 'Active'],
+    SUSPENDED: ['amber', 'Suspended'],
+    INACTIVE: ['neutral', 'Inactive'],
+  };
+  const [tone, label] = map[status];
+  return <Badge tone={tone}>{label}</Badge>;
 }
 
 export function EnrollmentBadge({ status }: { status: EnrollmentStatus }) {

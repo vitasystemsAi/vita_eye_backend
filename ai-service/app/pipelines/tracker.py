@@ -29,6 +29,12 @@ MAX_TRACK_TTL_SEC = 8.0
 TTL_FRAME_INTERVALS = 2.5  # a track survives this many missed frames at slow sampling rates
 IOU_MATCH = 0.25
 INSTANT_KNOWN_BOOST = 0.12  # similarity above known_threshold that confirms a match from one frame
+# A name already on a track is not replaced until the new person wins this many frames in a row.
+NAME_SWITCH_FRAMES = 3
+# Appearance repair: only move a box off its track when the faces clearly crossed.
+CROSS_GAIN = 0.35
+CROSS_ACCEPT = 0.50
+CROSS_KEEP = 0.45
 
 
 @dataclass
@@ -62,9 +68,26 @@ class Track:
     best_quality: float = -1.0
     evidence_frame: Optional[np.ndarray] = None
     evidence_bbox: Optional[tuple[int, int, int, int]] = None
+    shown_person_id: Optional[str] = None
+
+    def appearance(self) -> Optional[np.ndarray]:
+        """Unit mean of the recent embeddings on this track, used to keep a name on the right face."""
+        embs = [o.embedding for o in self.observations if o.embedding is not None]
+        if not embs:
+            return None
+        mean = np.mean(np.vstack(embs[-5:]), axis=0)
+        norm = float(np.linalg.norm(mean))
+        if norm == 0:
+            return None
+        return (mean / norm).astype(np.float32)
 
     def display_label(self) -> tuple[str, Optional[str], Optional[float]]:
-        """Stable identity for the live overlay, taken from the recent frames of this track."""
+        """Stable identity for the live overlay.
+
+        A registered name is shown only for one person. A single conflicting frame does not
+        replace that name with someone else's; the overlay stays Uncertain until the new
+        person wins three frames in a row.
+        """
         recent = [o for o in self.observations if o.label != "LOW_QUALITY"][-8:]
         if not recent:
             last = self.observations[-1] if self.observations else None
@@ -73,7 +96,26 @@ class Track:
         (label, person_id), _count = votes.most_common(1)[0]
         agreeing = [o for o in recent if o.label == label and (label != "KNOWN" or o.person_id == person_id)]
         similarity = agreeing[-1].similarity
-        return label, person_id, similarity
+        if label != "KNOWN" or not person_id:
+            self.shown_person_id = None
+            return label, None, similarity
+
+        rival_votes = sum(count for (lab, pid), count in votes.items() if lab == "KNOWN" and pid and pid != person_id)
+        if rival_votes >= 2:
+            self.shown_person_id = None
+            return "UNCERTAIN", None, similarity
+
+        if self.shown_person_id and self.shown_person_id != person_id:
+            streak = 0
+            for obs in reversed(recent):
+                if obs.label == "KNOWN" and obs.person_id == person_id:
+                    streak += 1
+                else:
+                    break
+            if streak < NAME_SWITCH_FRAMES:
+                return "UNCERTAIN", None, similarity
+        self.shown_person_id = person_id
+        return "KNOWN", person_id, similarity
 
 
 def iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
@@ -84,6 +126,54 @@ def iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
     inter = max(0, x2 - x1) * max(0, y2 - y1)
     union = aw * ah + bw * bh - inter
     return inter / union if union > 0 else 0.0
+
+
+def _repair_crossed_faces(
+    assigned: dict[int, "Track"],
+    embeddings: list[Optional[np.ndarray]],
+) -> dict[int, "Track"]:
+    """Give each box back to the track whose face it matches when two people have crossed.
+
+    Geometry alone follows the box, so after a crossing the name stays on the wrong person.
+    The repair runs only when every face in the group has an embedding and a track prototype,
+    and only when the appearance assignment is clearly better than the box assignment.
+    """
+    items = [(i, track) for i, track in sorted(assigned.items()) if i < len(embeddings)]
+    if len(items) > 8:
+        items = items[:8]
+    n = len(items)
+    if n < 2:
+        return assigned
+    protos = [track.appearance() for _, track in items]
+    if any(proto is None for proto in protos):
+        return assigned
+    sims = np.zeros((n, n), dtype=np.float32)
+    for row, (det_i, _) in enumerate(items):
+        emb = embeddings[det_i]
+        if emb is None:
+            return assigned
+        for col, proto in enumerate(protos):
+            sims[row, col] = float(emb @ proto)  # type: ignore[operator]
+    identity = float(sum(sims[i, i] for i in range(n)))
+    best_perm: tuple[int, ...] = tuple(range(n))
+    best = identity
+    for perm in itertools.permutations(range(n)):
+        score = float(sum(sims[i, perm[i]] for i in range(n)))
+        if score > best:
+            best = score
+            best_perm = perm
+    if best < identity + CROSS_GAIN or best_perm == tuple(range(n)):
+        return assigned
+    for row in range(n):
+        col = best_perm[row]
+        if sims[row, col] < CROSS_ACCEPT:
+            return assigned
+        if col != row and sims[row, row] > CROSS_KEEP:
+            return assigned
+    repaired = dict(assigned)
+    for row, (det_i, _) in enumerate(items):
+        repaired[det_i] = items[best_perm[row]][1]
+    return repaired
 
 
 def centre_close(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
@@ -121,8 +211,14 @@ class CameraTracker:
             self.unknown_memory.popleft()
         return gone
 
-    def assign(self, bboxes: list[tuple[int, int, int, int]], now: float, policy: Policy) -> list[Track]:
-        """Greedy IoU association. Returns one track per input bbox (new tracks are created)."""
+    def assign(
+        self,
+        bboxes: list[tuple[int, int, int, int]],
+        now: float,
+        policy: Policy,
+        embeddings: Optional[list[Optional[np.ndarray]]] = None,
+    ) -> list[Track]:
+        """Greedy IoU association, then an appearance check so crossed faces keep their own names."""
         if self._last_frame_t != now:
             self.expire(now, policy)
         candidates = sorted(
@@ -152,6 +248,9 @@ class CameraTracker:
                     self.tracks[t.id] = t
                     used.add(t.id)
                     assigned[i] = t
+        if embeddings is not None and len(bboxes) >= 2:
+            assigned = _repair_crossed_faces(assigned, embeddings)
+        for i, b in enumerate(bboxes):
             assigned[i].bbox = b
             assigned[i].last_seen = now
         return [assigned[i] for i in range(len(bboxes))]

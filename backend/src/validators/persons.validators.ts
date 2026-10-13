@@ -12,7 +12,15 @@ export const createPersonSchema = z.object({
     .max(64)
     .regex(/^[A-Za-z0-9._\-/]+$/, 'Reference ID may contain letters, digits, . _ - /'),
   department: z.string().trim().max(120).optional().nullable(),
-  status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+  status: z.enum(['ACTIVE', 'SUSPENDED', 'INACTIVE']).optional(),
+});
+
+export const poseTargetSchema = z.object({
+  target: z.enum(['straight', 'left', 'right', 'up', 'down']),
+});
+
+export const setStatusSchema = z.object({
+  status: z.enum(['ACTIVE', 'SUSPENDED', 'INACTIVE']),
 });
 
 export const updatePersonSchema = createPersonSchema
@@ -21,7 +29,7 @@ export const updatePersonSchema = createPersonSchema
 
 export const listPersonsSchema = paginationSchema.extend({
   search: z.string().trim().max(100).optional(),
-  status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
+  status: z.enum(['ACTIVE', 'SUSPENDED', 'INACTIVE']).optional(),
   enrollmentStatus: z.enum(['PENDING', 'ENROLLED', 'FAILED', 'REVOKED']).optional(),
   department: z.string().trim().max(120).optional(),
   sort: z.enum(['personName', 'referenceId', 'createdAt', 'updatedAt']).default('createdAt'),

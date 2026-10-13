@@ -97,6 +97,27 @@ export function aiHealth() {
   return call<{ status: string; modelVersion: string; models: Record<string, unknown>; streams: number }>('/health', { timeoutMs: 3000 });
 }
 
+export type PoseTarget = 'straight' | 'left' | 'right' | 'up' | 'down';
+
+export interface PoseGuideResult {
+  faces: number;
+  yaw: number | null;
+  pitch: number | null;
+  roll: number | null;
+  ready: PoseTarget[];
+  matched: boolean;
+  nudge: string;
+  issues: string[];
+}
+
+/** Live head-pose check for guided enrollment. Detects only — no template is created. */
+export function guidePose(image: Buffer, mimeType: string, target: PoseTarget): Promise<PoseGuideResult> {
+  const form = new FormData();
+  form.append('image', new Blob([new Uint8Array(image)], { type: mimeType }), 'pose.jpg');
+  form.append('target', target);
+  return inferenceSlots.run(() => call<PoseGuideResult>('/v1/enroll/pose', { method: 'POST', body: form, timeoutMs: 4000 }));
+}
+
 export async function embedFace(image: Buffer, mimeType: string, policy: RecognitionPolicy): Promise<EmbedResult> {
   const form = new FormData();
   form.append('image', new Blob([new Uint8Array(image)], { type: mimeType }), 'face.jpg');

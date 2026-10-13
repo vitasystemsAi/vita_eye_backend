@@ -113,7 +113,7 @@ export interface EventDetail extends EventSummary {
   notes: Array<{ id: string; note: string; createdAt: string; author: { id: string; name: string } | null }>;
 }
 
-export type PersonStatus = 'ACTIVE' | 'INACTIVE';
+export type PersonStatus = 'ACTIVE' | 'SUSPENDED' | 'INACTIVE';
 export type EnrollmentStatus = 'PENDING' | 'ENROLLED' | 'FAILED' | 'REVOKED';
 export type LegalBasis = 'CONSENT' | 'EMPLOYMENT' | 'LEGAL_OBLIGATION' | 'LEGITIMATE_USE' | 'OTHER';
 
@@ -129,6 +129,11 @@ export interface Person {
   consentRecordedAt: string | null;
   enrolledBy: { id: string; name: string } | null;
   templateCount: number;
+  statusChangedAt: string;
+  /** True when no face was stored, so the registration can be deleted immediately. */
+  canDiscard?: boolean;
+  canDelete: boolean;
+  deleteAvailableAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

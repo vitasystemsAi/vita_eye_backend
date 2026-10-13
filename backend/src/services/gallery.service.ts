@@ -36,6 +36,7 @@ export async function loadGallery(organizationId: string) {
       personId: p.id,
       personName: p.personName,
       modelVersion: t.modelVersion,
+      qualityScore: t.qualityScore,
       embedding: cipher.decryptEmbedding(t.encryptedEmbedding, templateAad(t.id, p.id)),
     })),
   );

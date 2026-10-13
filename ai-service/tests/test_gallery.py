@@ -24,8 +24,39 @@ def test_match_uses_best_template_per_person_and_second_best_other_person():
     assert g.size == 3 and sorted(g.person_ids) == ["A", "B"]
     person, best, second = g.match(np.asarray(a2, dtype=np.float32))
     assert person == "A"
-    assert abs(best - 1.0) < 1e-5
-    assert second is not None and second < 0.5
+    assert best is not None and best > 0.6
+    assert second is not None and best > second + 0.2
+
+
+def test_outlier_template_cannot_steal_another_persons_identity():
+    """A photo of A stored by mistake under B must not make a probe of A identify as B."""
+    a = np.asarray(unit(1), dtype=np.float32)
+    b = np.asarray(unit(2), dtype=np.float32)
+    b = b - a * float(a @ b)
+    b = b / np.linalg.norm(b)
+    g = build_gallery(
+        "v1",
+        [
+            {"personId": "A", "modelVersion": MV, "embedding": a.tolist(), "qualityScore": 0.9},
+            {"personId": "A", "modelVersion": MV, "embedding": a.tolist(), "qualityScore": 0.9},
+            {"personId": "B", "modelVersion": MV, "embedding": b.tolist(), "qualityScore": 0.9},
+            {"personId": "B", "modelVersion": MV, "embedding": a.tolist(), "qualityScore": 0.4},
+        ],
+        MV,
+    )
+    person, best, second = g.match(a)
+    assert person == "A"
+    assert best is not None and second is not None
+    assert best > 0.9 and best - second > 0.15
+
+
+def test_exact_single_template_scores_one():
+    a = unit(4)
+    g = build_gallery("v1", [{"personId": "A", "personName": "Ada", "modelVersion": MV, "embedding": a}], MV)
+    person, best, second = g.match(np.asarray(a, dtype=np.float32))
+    assert person == "A" and g.name_for("A") == "Ada"
+    assert best is not None and abs(best - 1.0) < 1e-5
+    assert second is None
 
 
 def test_incompatible_model_versions_are_skipped():

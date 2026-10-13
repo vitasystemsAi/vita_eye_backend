@@ -11,7 +11,7 @@ const schema = z.object({
   personName: z.string().trim().min(1, 'Name is required').max(160),
   referenceId: referenceIdRule,
   department: z.string().trim().max(120),
-  status: z.enum(['ACTIVE', 'INACTIVE']),
+  status: z.enum(['ACTIVE', 'SUSPENDED', 'INACTIVE']),
 });
 export type PersonFormValues = z.infer<typeof schema>;
 
@@ -54,7 +54,8 @@ export function PersonForm({ initial, submitLabel, onSubmit, onCancel }: { initi
         <Field label="Status" error={errors.status?.message}>
           <Select {...register('status')}>
             <option value="ACTIVE">Active — included in recognition</option>
-            <option value="INACTIVE">Inactive — excluded from recognition</option>
+            <option value="SUSPENDED">Suspended — paused, can be made active again</option>
+            <option value="INACTIVE">Inactive — held out of recognition, retrievable</option>
           </Select>
         </Field>
       </div>

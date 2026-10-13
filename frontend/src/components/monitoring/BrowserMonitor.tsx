@@ -18,7 +18,7 @@ const PILL: Partial<Record<MonitorStatus, { text: string; className: string }>> 
   paused: { text: 'PAUSED · OUTSIDE SCHEDULE', className: 'bg-sky-700/90' },
 };
 
-function FaceOverlay({ frameSize, faces, fit }: { frameSize: [number, number]; faces: FrameFace[]; fit: 'stretch' | 'contain' }) {
+function FaceOverlay({ frameSize, faces, fit, mirror = false }: { frameSize: [number, number]; faces: FrameFace[]; fit: 'stretch' | 'contain'; mirror?: boolean }) {
   return (
     <svg
       className="pointer-events-none absolute inset-0 h-full w-full"
@@ -26,7 +26,8 @@ function FaceOverlay({ frameSize, faces, fit }: { frameSize: [number, number]; f
       preserveAspectRatio={fit === 'contain' ? 'xMidYMid meet' : 'none'}
     >
       {faces.map((f) => {
-        const [x, y, w, h] = f.bbox;
+        const [, y, w, h] = f.bbox;
+        const x = mirror ? frameSize[0] - f.bbox[0] - w : f.bbox[0];
         const color = FACE_COLORS[f.label];
         const label = f.label === 'KNOWN' && f.personName ? f.personName : FACE_LABELS[f.label];
         const sim = f.similarity !== null && f.label !== 'LOW_QUALITY' ? ` ${f.similarity.toFixed(2)}` : '';
@@ -46,6 +47,47 @@ function FaceOverlay({ frameSize, faces, fit }: { frameSize: [number, number]; f
   );
 }
 
+/** Glide each box toward the latest recognition so the outline follows the face instead of jumping. */
+function useSmoothFaces(faces: FrameFace[]): FrameFace[] {
+  const targetRef = useRef(faces);
+  const shownRef = useRef(faces);
+  const [smooth, setSmooth] = useState(faces);
+  targetRef.current = faces;
+  useEffect(() => {
+    let raf = 0;
+    let running = true;
+    const step = () => {
+      if (!running) return;
+      const target = targetRef.current;
+      const previous = new Map(shownRef.current.map((face) => [face.trackId, face]));
+      let moved = shownRef.current.length !== target.length;
+      const blended = target.map((face) => {
+        const old = previous.get(face.trackId);
+        if (!old) {
+          moved = true;
+          return face;
+        }
+        const bbox = face.bbox.map((value, index) => {
+          const next = old.bbox[index] + (value - old.bbox[index]) * 0.42;
+          if (Math.abs(next - value) > 0.6) moved = true;
+          return next;
+        }) as FrameFace['bbox'];
+        if (old.label !== face.label || old.personName !== face.personName || old.similarity !== face.similarity) moved = true;
+        return { ...face, bbox };
+      });
+      shownRef.current = blended;
+      if (moved) setSmooth(blended);
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => {
+      running = false;
+      cancelAnimationFrame(raf);
+    };
+  }, []);
+  return smooth;
+}
+
 function jpegBlob(image: unknown): Blob | null {
   if (image instanceof Blob) return image;
   if (image instanceof ArrayBuffer) return new Blob([image], { type: 'image/jpeg' });
@@ -60,7 +102,7 @@ function jpegBlob(image: unknown): Blob | null {
   return null;
 }
 
-/** Paints the camera's real pixels. A raw <video> element can present a mirrored selfie; the canvas does not. */
+/** Paints the camera pixels. The canvas element is mirrored in CSS so a raised right hand stays on the right; the bitmap itself is not flipped, so recognition still sees the real image. */
 function useCameraCanvas(stream: MediaStream | null, active: boolean) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -128,6 +170,7 @@ export function RemotePreview({
   const [watching, setWatching] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const seq = useRef(0);
+  const matched = useRef(false);
 
   const [faces, setFaces] = useState<FrameFace[]>([]);
   const [frameSize, setFrameSize] = useState<[number, number] | null>(null);
@@ -139,6 +182,7 @@ export function RemotePreview({
     setHasFrame(false);
     setFaces([]);
     setFrameSize(null);
+    matched.current = false;
   }, []);
 
   useEffect(() => {
@@ -152,6 +196,8 @@ export function RemotePreview({
     };
     const onFrame = (payload: PreviewFrame) => {
       if (!alive || payload.cameraId !== cameraId || !payload.image) return;
+      const marked = Boolean(payload.faces && payload.frameSize);
+      if (!marked && matched.current) return;
       const blob = jpegBlob(payload.image);
       if (!blob) return;
       const ticket = ++seq.current;
@@ -174,6 +220,7 @@ export function RemotePreview({
         bitmap.close();
         setHasFrame(true);
         if (payload.faces && payload.frameSize) {
+          matched.current = true;
           setFaces(payload.faces);
           setFrameSize(payload.frameSize);
         }
@@ -206,8 +253,8 @@ export function RemotePreview({
   const waiting = !hasFrame;
   return (
     <div className={fill || bare ? `absolute inset-0 ${waiting && passthrough ? 'pointer-events-none' : 'bg-black'}` : 'relative aspect-video w-full overflow-hidden bg-black'}>
-      <canvas ref={canvasRef} className={`absolute inset-0 h-full w-full object-contain ${waiting ? 'invisible' : ''}`} />
-      {hasFrame && frameSize && <FaceOverlay frameSize={frameSize} faces={faces} fit="contain" />}
+      <canvas ref={canvasRef} className={`absolute inset-0 h-full w-full object-contain ${camera.cameraType === 'BROWSER' ? 'scale-x-[-1]' : ''} ${waiting ? 'invisible' : ''}`} />
+      {hasFrame && frameSize && <FaceOverlay frameSize={frameSize} faces={faces} fit="contain" mirror={camera.cameraType === 'BROWSER'} />}
       {hasFrame && !bare && (
         <span className="absolute top-4 left-4 z-10 inline-flex items-center gap-1.5 rounded-full bg-red-600/90 px-3 py-1.5 text-sm font-semibold text-white">
           <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> LIVE · {camera.cameraName}
@@ -255,13 +302,14 @@ export function BrowserStage({ camera }: { camera: Camera }) {
   const { session, status, stream, faces, frameSize } = monitor;
   const mine = session?.cameraId === camera.id;
   const showVideo = mine && Boolean(stream) && status !== 'other-tab';
+  const smoothFaces = useSmoothFaces(showVideo ? faces : []);
   const { videoRef, canvasRef } = useCameraCanvas(stream, showVideo);
 
   return (
     <div className="absolute inset-0 bg-black">
       <video ref={videoRef} playsInline muted className="pointer-events-none absolute h-px w-px opacity-0" />
-      <canvas ref={canvasRef} className={`absolute inset-0 h-full w-full object-contain ${showVideo ? '' : 'invisible'}`} />
-      {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={faces} fit="contain" />}
+      <canvas ref={canvasRef} className={`absolute inset-0 h-full w-full scale-x-[-1] object-contain ${showVideo ? '' : 'invisible'}`} />
+      {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={smoothFaces} fit="contain" mirror />}
       {!showVideo && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center text-ink-500">
           <CameraIcon className="h-8 w-8" />
@@ -307,6 +355,7 @@ export function BrowserMonitor({
   const notify = useToast();
   const monitor = useMonitor();
   const { session, status, stream, faces, frameSize, stats } = monitor;
+  const smoothFaces = useSmoothFaces(faces);
   const browserCams = cameras.filter((c) => c.cameraType === 'BROWSER' && c.isActive);
   const [cameraId, setCameraId] = useState('');
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -415,8 +464,8 @@ export function BrowserMonitor({
 
       <div className="relative overflow-hidden rounded-xl border border-ink-700 bg-black">
         <video ref={videoRef} playsInline muted className="pointer-events-none absolute h-px w-px opacity-0" />
-        <canvas ref={canvasRef} className={`block h-auto max-h-[70vh] w-full object-contain ${showVideo ? '' : 'hidden'}`} />
-        {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={faces} fit="stretch" />}
+        <canvas ref={canvasRef} className={`block h-auto max-h-[70vh] w-full scale-x-[-1] object-contain ${showVideo ? '' : 'hidden'}`} />
+        {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={smoothFaces} fit="stretch" mirror />}
         {!showVideo && (
           <div className="flex aspect-video flex-col items-center justify-center gap-2 text-center text-ink-400">
             <CameraIcon className="h-10 w-10" />

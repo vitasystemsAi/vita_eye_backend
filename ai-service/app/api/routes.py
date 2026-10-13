@@ -11,6 +11,7 @@ from app.config.settings import get_settings
 from app.models.schemas import FrameMeta, FrameResponse, Policy, PolicyUpdate, StreamStart, StreamStop, StreamTest
 from app.pipelines.stream_worker import StreamConfig, test_stream
 from app.services.face_engine import decode_image
+from app.services.quality import POSE_TARGETS, guide_reading, pose_nudge
 
 log = logging.getLogger("vita.api")
 
@@ -57,7 +58,8 @@ def enroll_embed(request: Request, image: UploadFile = File(...), policy: str | 
         if len(faces) > 1:
             a0 = faces[0].bbox[2] * faces[0].bbox[3]
             a1 = faces[1].bbox[2] * faces[1].bbox[3]
-            if a1 > 0.35 * a0:
+            # A second face even at a quarter of the subject is enough to enroll the wrong person.
+            if a1 > 0.22 * a0:
                 _reject("Multiple faces detected; only the enrolled person may be in the image", ["MULTIPLE_FACES"])
         face = faces[0]
         aligned, q = engine.analyse(img, face, pol.min_face_size, pol.min_detection_score)
@@ -75,6 +77,48 @@ def enroll_embed(request: Request, image: UploadFile = File(...), policy: str | 
         "modelName": engine.model_name,
         "modelVersion": engine.model_version,
     }
+
+
+def _pose_body(target: str, faces: int, issues: list[str], reading: dict | None = None) -> dict:
+    yaw = reading["yaw"] if reading else None
+    pitch = reading["pitch"] if reading else None
+    roll = reading["roll"] if reading else None
+    matched, nudge = pose_nudge(target, yaw, pitch, roll, issues)
+    return {
+        "faces": faces,
+        "yaw": yaw,
+        "pitch": pitch,
+        "roll": roll,
+        "ready": reading["ready"] if reading and not issues else [],
+        "matched": matched,
+        "nudge": nudge,
+        "issues": issues,
+    }
+
+
+@router.post("/enroll/pose")
+def enroll_pose(request: Request, image: UploadFile = File(...), target: str = Form(...)):
+    """Detect the live head pose for guided enrollment. No embedding is stored."""
+    if target not in POSE_TARGETS:
+        raise HTTPException(status_code=400, detail="Unknown pose target")
+    try:
+        img = decode_image(_read_upload(image))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    engine = request.app.state.engine
+    with engine.slot():
+        faces = engine.detect(img)
+    if not faces:
+        return _pose_body(target, 0, ["NO_FACE"])
+    faces.sort(key=lambda f: f.bbox[2] * f.bbox[3], reverse=True)
+    if len(faces) > 1:
+        a0 = faces[0].bbox[2] * faces[0].bbox[3]
+        a1 = faces[1].bbox[2] * faces[1].bbox[3]
+        if a1 > 0.22 * a0:
+            return _pose_body(target, len(faces), ["MULTIPLE_FACES"])
+    reading = guide_reading(img, faces[0].row, target)
+    return _pose_body(target, 1, reading["issues"], reading)
 
 
 @router.post("/frames/process", response_model=FrameResponse, response_model_by_alias=True)

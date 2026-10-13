@@ -2,6 +2,16 @@
 
 Templates are fetched from the backend's internal endpoint (decrypted there) and kept only in
 memory. A gallery is refreshed whenever the backend reports a different gallery version.
+
+Identity score (also implemented for enrollment duplicate checks in the backend):
+
+* Each person is represented by a quality-weighted centroid, not by their single closest photo.
+* A template that sits far above that centroid is treated as an enrollment outlier and ignored.
+* The reported score is ``0.8 * centroid + 0.2 * best agreeing template``.
+* The second score is the next *person*, so a lookalike cannot be hidden by an extra photo.
+
+Taking the max over every template makes impostor scores climb as the gallery grows. At
+10,000 people that is how one registered name gets painted onto someone else.
 """
 from __future__ import annotations
 
@@ -15,12 +25,25 @@ import numpy as np
 
 log = logging.getLogger("vita.gallery")
 
+# A template this far above the person's centroid does not represent them.
+OUTLIER_GAP = 0.12
+CENTROID_WEIGHT = 0.8
+TEMPLATE_WEIGHT = 0.2
+
+
+def fuse_identity_score(centroid_similarity: float, template_max: float) -> float:
+    """Score one person. Outlier templates cannot outvote the person's prototype."""
+    if template_max <= centroid_similarity + OUTLIER_GAP:
+        return CENTROID_WEIGHT * centroid_similarity + TEMPLATE_WEIGHT * template_max
+    return centroid_similarity
+
 
 @dataclass
 class Gallery:
     version: str
     matrix: np.ndarray = field(default_factory=lambda: np.zeros((0, 128), dtype=np.float32))
     template_person: np.ndarray = field(default_factory=lambda: np.zeros((0,), dtype=np.int32))
+    centroids: np.ndarray = field(default_factory=lambda: np.zeros((0, 128), dtype=np.float32))
     person_ids: list[str] = field(default_factory=list)
     person_names: dict[str, str] = field(default_factory=dict)
     loaded_at: float = field(default_factory=time.time)
@@ -29,17 +52,32 @@ class Gallery:
     def size(self) -> int:
         return int(self.matrix.shape[0])
 
+    @property
+    def person_count(self) -> int:
+        return len(self.person_ids)
+
     def match(self, embedding: np.ndarray) -> tuple[Optional[str], Optional[float], Optional[float]]:
-        """Returns (best person id, best similarity, best similarity of a *different* person)."""
-        if self.size == 0:
+        """Returns (best person id, identity score, identity score of a *different* person)."""
+        if self.size == 0 or self.person_count == 0:
             return None, None, None
-        sims = self.matrix @ embedding
-        per_person = np.full(len(self.person_ids), -1.0, dtype=np.float32)
-        np.maximum.at(per_person, self.template_person, sims)
-        order = np.argsort(per_person)[::-1]
+        emb = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(emb))
+        if emb.shape != (128,) or norm == 0:
+            return None, None, None
+        emb = emb / norm
+        template_sims = self.matrix @ emb
+        centroid_sims = self.centroids @ emb
+        template_max = np.full(self.person_count, -1.0, dtype=np.float32)
+        np.maximum.at(template_max, self.template_person, template_sims)
+        fused = np.where(
+            template_max <= centroid_sims + OUTLIER_GAP,
+            CENTROID_WEIGHT * centroid_sims + TEMPLATE_WEIGHT * template_max,
+            centroid_sims,
+        ).astype(np.float32)
+        order = np.argsort(fused)[::-1]
         best = int(order[0])
-        second = float(per_person[order[1]]) if len(order) > 1 else None
-        return self.person_ids[best], float(per_person[best]), second
+        second = float(fused[order[1]]) if len(order) > 1 else None
+        return self.person_ids[best], float(fused[best]), second
 
     def name_for(self, person_id: Optional[str]) -> Optional[str]:
         if not person_id:
@@ -52,6 +90,7 @@ def build_gallery(version: str, templates: list[dict], model_version: str) -> Ga
     names: dict[str, str] = {}
     rows: list[np.ndarray] = []
     owners: list[int] = []
+    weights: list[float] = []
     skipped = 0
     for t in templates:
         if t.get("modelVersion") != model_version:
@@ -67,18 +106,33 @@ def build_gallery(version: str, templates: list[dict], model_version: str) -> Ga
         raw_name = t.get("personName")
         if isinstance(raw_name, str) and raw_name.strip():
             names.setdefault(person_id, raw_name.strip())
+        quality = t.get("qualityScore")
+        weight = float(quality) if isinstance(quality, (int, float)) and float(quality) > 0 else 0.75
         rows.append(emb / n)
         owners.append(idx)
+        weights.append(max(0.25, min(1.0, weight)))
     if skipped:
         log.warning("Skipped %d template(s) with incompatible model version or shape (re-enrollment required)", skipped)
     matrix = np.vstack(rows).astype(np.float32) if rows else np.zeros((0, 128), dtype=np.float32)
     persons = [None] * len(person_index)
     for pid, i in person_index.items():
         persons[i] = pid
+    centroids = np.zeros((len(persons), 128), dtype=np.float32)
+    if rows:
+        weight_arr = np.asarray(weights, dtype=np.float32)
+        owner_arr = np.asarray(owners, dtype=np.int32)
+        np.add.at(centroids, owner_arr, matrix * weight_arr[:, None])
+        sums = np.bincount(owner_arr, weights=weight_arr, minlength=len(persons)).astype(np.float32)
+        sums[sums <= 0] = 1.0
+        centroids /= sums[:, None]
+        norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        centroids /= norms
     return Gallery(
         version=version,
         matrix=matrix,
         template_person=np.asarray(owners, dtype=np.int32),
+        centroids=centroids,
         person_ids=persons,
         person_names=names,
     )

@@ -4,7 +4,7 @@ import { ArrowLeft, Pencil, Power, ScanFace, Trash2, UserRound } from 'lucide-re
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { EnrollmentBadge } from '@/components/badges';
+import { EnrollmentBadge, PersonStatusBadge } from '@/components/badges';
 import { EventsTable } from '@/components/events/EventsTable';
 import { EnrollmentPanel } from '@/components/persons/EnrollmentPanel';
 import { PersonForm } from '@/components/persons/PersonForm';
@@ -15,7 +15,7 @@ import { api, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { fmtDateTime, fmtPercent, humanize } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
-import type { EventSummary, PersonDetail } from '@/lib/types';
+import type { EventSummary, PersonDetail, PersonStatus } from '@/lib/types';
 
 function PersonDetailView() {
   const { id } = useParams<{ id: string }>();
@@ -28,18 +28,21 @@ function PersonDetailView() {
   const [enrolling, setEnrolling] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteText, setDeleteText] = useState('');
+  const [nextStatus, setNextStatus] = useState<PersonStatus | null>(null);
   const [busy, setBusy] = useState(false);
 
   if (loading && !p) return <LoadingBlock />;
   if (!p) return <ErrorBanner error={error ?? { message: 'Not found' }} onRetry={reload} />;
 
-  async function toggleActive() {
-    if (!p) return;
+  async function applyStatus() {
+    if (!p || !nextStatus) return;
     setBusy(true);
     try {
-      const { data } = await api.post<PersonDetail>(`/persons/${p.id}/${p.status === 'ACTIVE' ? 'deactivate' : 'activate'}`);
+      const { data } = await api.post<PersonDetail>(`/persons/${p.id}/status`, { status: nextStatus });
       setData(() => data);
-      notify('success', data.status === 'ACTIVE' ? 'Person activated' : 'Person deactivated', data.status === 'ACTIVE' ? 'Included in recognition again.' : 'Removed from the active recognition gallery.');
+      const title = data.status === 'ACTIVE' ? (p.status === 'INACTIVE' ? 'Person retrieved' : 'Person activated') : data.status === 'SUSPENDED' ? 'Person suspended' : 'Person marked inactive';
+      notify('success', title, data.status === 'ACTIVE' ? 'Included in recognition again.' : 'Removed from the recognition gallery. Templates are kept.');
+      setNextStatus(null);
     } catch (err) {
       notify('error', 'Update failed', errorMessage(err));
     } finally {
@@ -47,12 +50,19 @@ function PersonDetailView() {
     }
   }
 
+  const discardable = p.canDiscard ?? (p.templateCount === 0 && (p.enrollmentStatus === 'PENDING' || p.enrollmentStatus === 'FAILED'));
+
   async function remove() {
     if (!p) return;
     setBusy(true);
     try {
-      await api.delete(`/persons/${p.id}`);
-      notify('success', 'Registration deleted', 'Biometric templates were permanently erased and the deletion was verified.');
+      if (discardable) {
+        await api.post(`/persons/${p.id}/cancel`);
+        notify('success', 'Registration deleted', 'No face was stored. The person was removed.');
+      } else {
+        await api.delete(`/persons/${p.id}`);
+        notify('success', 'Registration deleted', 'Biometric templates were permanently erased and the deletion was verified.');
+      }
       router.replace('/persons');
     } catch (err) {
       notify('error', 'Delete failed', errorMessage(err));
@@ -68,7 +78,7 @@ function PersonDetailView() {
         description={
           <span className="inline-flex flex-wrap items-center gap-2">
             <span className="font-mono">{p.referenceId}</span>
-            <Badge tone={p.status === 'ACTIVE' ? 'green' : 'neutral'}>{p.status === 'ACTIVE' ? 'Active' : 'Inactive'}</Badge>
+            <PersonStatusBadge status={p.status} />
             <EnrollmentBadge status={p.enrollmentStatus} />
           </span>
         }
@@ -84,9 +94,26 @@ function PersonDetailView() {
                 <Button variant="secondary" icon={<Pencil className="h-4 w-4" />} onClick={() => setEditing(true)}>
                   Edit
                 </Button>
-                <Button variant="secondary" icon={<Power className="h-4 w-4" />} loading={busy} onClick={() => void toggleActive()}>
-                  {p.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
-                </Button>
+                {p.status === 'ACTIVE' && (
+                  <>
+                    <Button variant="warning" icon={<Power className="h-4 w-4" />} onClick={() => setNextStatus('SUSPENDED')}>
+                      Suspend
+                    </Button>
+                    <Button variant="secondary" onClick={() => setNextStatus('INACTIVE')}>
+                      Make inactive
+                    </Button>
+                  </>
+                )}
+                {p.status === 'SUSPENDED' && (
+                  <Button variant="secondary" icon={<Power className="h-4 w-4" />} onClick={() => setNextStatus('ACTIVE')}>
+                    Make active
+                  </Button>
+                )}
+                {p.status === 'INACTIVE' && (
+                  <Button variant="secondary" icon={<Power className="h-4 w-4" />} onClick={() => setNextStatus('ACTIVE')}>
+                    Retrieve
+                  </Button>
+                )}
               </>
             )}
             {can('persons:enroll') && (
@@ -94,10 +121,19 @@ function PersonDetailView() {
                 {p.templateCount ? 'Add / replace face' : 'Enroll face'}
               </Button>
             )}
-            {can('persons:delete') && (
+            {can('persons:manage') && discardable && (
               <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => setConfirmDelete(true)}>
                 Delete
               </Button>
+            )}
+            {can('persons:delete') && !discardable && p.status !== 'ACTIVE' && (
+              p.canDelete ? (
+                <Button variant="danger" icon={<Trash2 className="h-4 w-4" />} onClick={() => setConfirmDelete(true)}>
+                  Delete
+                </Button>
+              ) : (
+                <span className="self-center text-xs text-ink-400">Delete available {fmtDateTime(p.deleteAvailableAt)}</span>
+              )
             )}
           </>
         }
@@ -109,6 +145,7 @@ function PersonDetailView() {
             <KeyValue
               items={[
                 ['Department', p.department ?? '—'],
+                ['Status since', fmtDateTime(p.statusChangedAt)],
                 ['Registered', fmtDateTime(p.createdAt)],
                 ['Legal basis', p.legalBasis ? humanize(p.legalBasis) : 'Not recorded'],
                 ['Consent reference', p.consentReference ?? '—'],
@@ -189,27 +226,55 @@ function PersonDetailView() {
       </Modal>
 
       <ConfirmDialog
+        open={nextStatus !== null}
+        onClose={() => setNextStatus(null)}
+        title={nextStatus === 'SUSPENDED' ? 'Suspend registration' : nextStatus === 'INACTIVE' ? 'Mark inactive' : p.status === 'INACTIVE' ? 'Retrieve to active' : 'Make active'}
+        confirmLabel={nextStatus === 'SUSPENDED' ? 'Suspend' : nextStatus === 'INACTIVE' ? 'Make inactive' : p.status === 'INACTIVE' ? 'Retrieve' : 'Make active'}
+        tone={nextStatus === 'ACTIVE' ? 'primary' : 'warning'}
+        loading={busy}
+        onConfirm={() => void applyStatus()}
+        message={
+          <p>
+            <strong>{p.personName}</strong>{' '}
+            {nextStatus === 'ACTIVE'
+              ? 'returns to recognition. Enrolled face templates are kept.'
+              : 'leaves recognition immediately. Face templates are kept, and you can restore them later.'}
+            {nextStatus !== 'ACTIVE' && ' Permanent deletion is available 7 days after this change.'}
+          </p>
+        }
+      />
+
+      <ConfirmDialog
         open={confirmDelete}
         onClose={() => { setConfirmDelete(false); setDeleteText(''); }}
         title="Delete registration"
-        confirmLabel="Delete permanently"
+        confirmLabel={discardable ? 'Delete' : 'Delete permanently'}
+        dismissLabel={discardable ? 'Keep' : 'Cancel'}
         loading={busy}
-        onConfirm={() => deleteText === p.referenceId && void remove()}
+        onConfirm={() => (discardable || deleteText === p.referenceId) && void remove()}
         message={
-          <>
+          discardable ? (
             <p>
-              This permanently erases all {p.templateCount} biometric template(s) for <strong>{p.personName}</strong> and removes the person from recognition. The deletion is verified and recorded in the audit log.
+              <strong>{p.personName}</strong> ({p.referenceId}) has no face enrolled. Deleting removes the registration now. The reference ID can be used again.
             </p>
-            <p className="text-ink-400">Historical detection events are retained (per the retention policy) but will show the person as deleted.</p>
-          </>
+          ) : (
+            <>
+              <p>
+                This permanently erases all {p.templateCount} biometric template(s) for <strong>{p.personName}</strong> and removes the person from recognition. The deletion is verified and recorded in the audit log.
+              </p>
+              <p className="text-ink-400">Historical detection events are retained (per the retention policy) but will show the person as deleted.</p>
+            </>
+          )
         }
       >
-        <div className="mt-4">
-          <label className="label">
-            Type <span className="font-mono normal-case">{p.referenceId}</span> to confirm
-          </label>
-          <Input value={deleteText} onChange={(e) => setDeleteText(e.target.value)} className="font-mono" />
-        </div>
+        {!discardable && (
+          <div className="mt-4">
+            <label className="label">
+              Type <span className="font-mono normal-case">{p.referenceId}</span> to confirm
+            </label>
+            <Input value={deleteText} onChange={(e) => setDeleteText(e.target.value)} className="font-mono" />
+          </div>
+        )}
       </ConfirmDialog>
     </>
   );

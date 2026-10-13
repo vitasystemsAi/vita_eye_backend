@@ -112,7 +112,12 @@ export async function cameraPreview(req: Request, res: Response) {
   }
   const jpeg = Buffer.from(body.imageJpegB64, 'base64');
   if (jpeg.length < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw AppError.badRequest('Preview is not a JPEG');
-  const faces = (body.faces ?? []).map((f) => ({ ...f, personId: f.personId ?? null, personName: f.personName ?? null, similarity: f.similarity ?? null }));
+  const faces = (body.faces ?? []).map((f) => ({
+    ...f,
+    personId: f.label === 'KNOWN' ? (f.personId ?? null) : null,
+    personName: f.label === 'KNOWN' ? (f.personName ?? null) : null,
+    similarity: f.similarity ?? null,
+  }));
   const payload = { cameraId: id, image: jpeg, faces, frameSize: body.frameSize };
   rememberPreview(id, payload);
   emitToPreview(id, 'camera:preview', payload, { volatile: true });

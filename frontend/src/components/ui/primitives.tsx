@@ -245,6 +245,7 @@ export function ConfirmDialog({
   title,
   message,
   confirmLabel = 'Confirm',
+  dismissLabel = 'Cancel',
   tone = 'danger',
   loading,
   onConfirm,
@@ -255,6 +256,7 @@ export function ConfirmDialog({
   title: string;
   message: ReactNode;
   confirmLabel?: string;
+  dismissLabel?: string;
   tone?: 'danger' | 'primary' | 'warning';
   loading?: boolean;
   onConfirm: () => void;
@@ -270,7 +272,7 @@ export function ConfirmDialog({
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={loading}>
-            Cancel
+            {dismissLabel}
           </Button>
           <Button variant={tone} onClick={onConfirm} loading={loading}>
             {confirmLabel}

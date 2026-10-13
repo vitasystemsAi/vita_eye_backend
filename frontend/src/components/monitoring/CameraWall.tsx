@@ -60,12 +60,8 @@ function Picture({ camera }: { camera: Camera }) {
   const { session, status } = useMonitor();
   const localBrowser = camera.cameraType === 'BROWSER' && session?.cameraId === camera.id && status !== 'other-tab';
   if (camera.monitoringEnabled) {
-    return (
-      <>
-        {localBrowser && <BrowserStage camera={camera} />}
-        <RemotePreview cameras={[camera]} bare passthrough={localBrowser} />
-      </>
-    );
+    if (localBrowser) return <BrowserStage camera={camera} />;
+    return <RemotePreview cameras={[camera]} bare />;
   }
   if (camera.cameraType === 'BROWSER') return <BrowserStage camera={camera} />;
   return (

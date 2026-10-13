@@ -17,8 +17,11 @@ simply someone without a matching registration, not an intruder.
    `LOW_QUALITY` and are ignored; they never count as unknown.
 3. **Embedding** – SFace produces a 128-dimensional L2-normalised vector. Templates are stored
    AES-256-GCM encrypted and decrypted only inside the private network for the AI service.
-4. **Matching** – cosine similarity (dot product, -1…1) against every template in the
-   organization's gallery. The best person and the best *other* person are kept.
+4. **Matching** – each enrolled person is scored by a quality-weighted centroid of their
+   templates (cosine similarity, -1…1). A template that sits far above that centroid is ignored,
+   so one bad enrollment photo cannot steal a match. The best person and the best *other*
+   person are kept. The required gap between them starts at `matchMargin` and widens slightly
+   as the gallery grows (about +0.06 at 10,000 people), so a close lookalike stays Uncertain.
 5. **Classification of one observation**
 
    | Condition | Label |

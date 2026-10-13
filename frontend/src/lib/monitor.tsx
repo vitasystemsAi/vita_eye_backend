@@ -201,7 +201,6 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const grabberRef = useRef<{ track: MediaStreamTrack; grabber: FrameGrabber } | null>(null);
   const grabbing = useRef(false);
-  const inferBusy = useRef(false);
   const lastProcessedAt = useRef(0);
   const sleeperRef = useRef<ReturnType<typeof createSleeper> | null>(null);
   sessionRef.current = session;
@@ -441,7 +440,6 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
       if (!blob || cancelled) return 'wait';
       const size: [number, number] = [canvas.width, canvas.height];
       setStats((s) => ({ ...s, sent: s.sent + 1 }));
-      inferBusy.current = true;
       try {
         const ack: FrameAck = await socket!.timeout(ACK_TIMEOUT_MS).emitWithAck('frame', { cameraId, image: await blob.arrayBuffer() });
         if (cancelled) return 'ended';
@@ -482,8 +480,6 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
         setStats((s) => ({ ...s, failed: s.failed + 1 }));
         setFrameError('No response from the server — retrying.');
         return 'wait';
-      } finally {
-        inferBusy.current = false;
       }
     }
 
@@ -501,37 +497,6 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [owner, cameraId, samplingFps, stream, socket, grab]);
-
-  // While one frame is being identified, keep sending the newest picture so the wall does not freeze.
-  useEffect(() => {
-    if (!owner || !cameraId || !stream || !socket) return;
-    let cancelled = false;
-    let sending = false;
-    const timer = window.setInterval(() => {
-      if (cancelled || sending || !inferBusy.current || grabbing.current || !socket.connected) return;
-      sending = true;
-      void (async () => {
-        try {
-          grabbing.current = true;
-          const canvas = await grab(stream);
-          grabbing.current = false;
-          if (!canvas || cancelled || !inferBusy.current) return;
-          const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.45));
-          if (!blob || cancelled || !inferBusy.current) return;
-          await socket.timeout(2000).emitWithAck('frame', { cameraId, image: await blob.arrayBuffer() });
-        } catch {
-          /* best-effort picture while recognition is busy */
-        } finally {
-          grabbing.current = false;
-          sending = false;
-        }
-      })();
-    }, 120);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [owner, cameraId, stream, socket, grab]);
 
   useEffect(() => {
     if (!session || !owner) return;

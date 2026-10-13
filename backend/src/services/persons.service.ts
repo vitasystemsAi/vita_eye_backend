@@ -11,6 +11,7 @@ import { bumpGalleryVersion, loadGallery, templateAad } from './gallery.service'
 import { getSettings } from './settings.service';
 import { syncPolicyToStreams } from './ingestion.service';
 import type { AuthContext } from '../types/auth';
+import { canDiscardRegistration, deletionHold, statusAuditAction, type PersonStatus } from '../utils/personStatus';
 
 const MAX_TEMPLATES_PER_PERSON = 10;
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -28,6 +29,9 @@ function present(p: RegisteredPerson, templateCount?: number) {
     consentRecordedAt: p.consentRecordedAt,
     enrolledBy: p.enroller ? { id: p.enroller.id, name: p.enroller.name } : null,
     templateCount: templateCount ?? p.templates?.length ?? 0,
+    statusChangedAt: p.statusChangedAt,
+    canDiscard: canDiscardRegistration(p.enrollmentStatus, templateCount ?? p.templates?.length ?? 0),
+    ...deletionHold(p.status, p.statusChangedAt),
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
   };
@@ -50,7 +54,7 @@ export async function listPersons(
     order: 'asc' | 'desc';
     sort: 'personName' | 'referenceId' | 'createdAt' | 'updatedAt';
     search?: string;
-    status?: 'ACTIVE' | 'INACTIVE';
+    status?: PersonStatus;
     enrollmentStatus?: 'PENDING' | 'ENROLLED' | 'FAILED' | 'REVOKED';
     department?: string;
   },
@@ -117,7 +121,7 @@ export async function getPerson(ctx: AuthContext, id: string) {
 
 export async function createPerson(
   ctx: AuthContext,
-  input: { personName: string; referenceId: string; department?: string | null; status?: 'ACTIVE' | 'INACTIVE' },
+  input: { personName: string; referenceId: string; department?: string | null; status?: PersonStatus },
   ip: string | null,
 ) {
   return sequelize.transaction(async (transaction) => {
@@ -133,7 +137,7 @@ export async function createPerson(
       await audit({ organizationId: ctx.organizationId, userId: ctx.userId, action: 'BIOMETRIC_PURGE_VERIFIED', entityType: 'registered_person', entityId: stale.id, ipAddress: ip, metadata: { reason: 'reference_reused' } }, transaction);
     }
     const p = await RegisteredPerson.create(
-      { organizationId: ctx.organizationId, personName: input.personName, referenceId: input.referenceId, department: input.department ?? null, status: input.status ?? 'ACTIVE' },
+      { organizationId: ctx.organizationId, personName: input.personName, referenceId: input.referenceId, department: input.department ?? null, status: input.status ?? 'ACTIVE', statusChangedAt: new Date() },
       { transaction },
     );
     await audit({ organizationId: ctx.organizationId, userId: ctx.userId, action: 'PERSON_CREATED', entityType: 'registered_person', entityId: p.id, ipAddress: ip, metadata: { referenceId: p.referenceId } }, transaction);
@@ -144,27 +148,50 @@ export async function createPerson(
 export async function updatePerson(
   ctx: AuthContext,
   id: string,
-  input: Partial<{ personName: string; referenceId: string; department: string | null; status: 'ACTIVE' | 'INACTIVE' }>,
+  input: Partial<{ personName: string; referenceId: string; department: string | null; status: PersonStatus }>,
   ip: string | null,
 ) {
   const p = await findPerson(ctx, id);
-  const statusChanged = input.status !== undefined && input.status !== p.status;
+  const from = p.status;
+  const statusChanged = input.status !== undefined && input.status !== from;
   await sequelize.transaction(async (transaction) => {
-    await p.update(input, { transaction });
-    await audit({ organizationId: ctx.organizationId, userId: ctx.userId, action: 'PERSON_UPDATED', entityType: 'registered_person', entityId: id, ipAddress: ip, metadata: { fields: Object.keys(input) } }, transaction);
+    await p.update(statusChanged ? { ...input, statusChangedAt: new Date() } : input, { transaction });
+    await audit({
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+      action: statusChanged && input.status ? statusAuditAction(from, input.status) : 'PERSON_UPDATED',
+      entityType: 'registered_person',
+      entityId: id,
+      ipAddress: ip,
+      metadata: statusChanged ? { from, to: input.status } : { fields: Object.keys(input) },
+    }, transaction);
   });
-  if (statusChanged) await galleryChanged(ctx.organizationId);
+  if (statusChanged && (from === 'ACTIVE' || input.status === 'ACTIVE')) await galleryChanged(ctx.organizationId);
+  return getPerson(ctx, id);
+}
+
+export async function setStatus(ctx: AuthContext, id: string, status: PersonStatus, ip: string | null) {
+  const p = await findPerson(ctx, id);
+  if (p.status === status) return getPerson(ctx, id);
+  const from = p.status;
+  await sequelize.transaction(async (transaction) => {
+    await p.update({ status, statusChangedAt: new Date() }, { transaction });
+    await audit({
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+      action: statusAuditAction(from, status),
+      entityType: 'registered_person',
+      entityId: id,
+      ipAddress: ip,
+      metadata: { from, to: status },
+    }, transaction);
+  });
+  if (from === 'ACTIVE' || status === 'ACTIVE') await galleryChanged(ctx.organizationId);
   return getPerson(ctx, id);
 }
 
 export async function setActive(ctx: AuthContext, id: string, active: boolean, ip: string | null) {
-  const p = await findPerson(ctx, id);
-  await sequelize.transaction(async (transaction) => {
-    await p.update({ status: active ? 'ACTIVE' : 'INACTIVE' }, { transaction });
-    await audit({ organizationId: ctx.organizationId, userId: ctx.userId, action: active ? 'PERSON_ACTIVATED' : 'PERSON_DEACTIVATED', entityType: 'registered_person', entityId: id, ipAddress: ip }, transaction);
-  });
-  await galleryChanged(ctx.organizationId);
-  return getPerson(ctx, id);
+  return setStatus(ctx, id, active ? 'ACTIVE' : 'INACTIVE', ip);
 }
 
 export interface EnrollFile {
@@ -220,24 +247,44 @@ export async function enroll(
     throw new AppError(400, 'FACE_QUALITY_REJECTED', 'No image met the enrollment quality requirements', { results });
   }
 
-  // Templates of the new images must agree with each other (same person in every image).
-  for (let i = 1; i < accepted.length; i++) {
-    const sim = dot(accepted[0].embedding, accepted[i].embedding);
+  // Every photo must be the same person. Compare against the clearest image, and every pair,
+  // so a different face cannot hide behind one photo that happens to match the first.
+  const anchor = accepted.reduce((best, item) => (item.quality.score > best.quality.score ? item : best));
+  const pairFloor = Math.max(0.4, settings.recognition.knownThreshold - 0.04);
+  for (const item of accepted) {
+    if (item === anchor) continue;
+    const sim = dot(anchor.embedding, item.embedding);
     if (sim < settings.recognition.knownThreshold) {
       throw new AppError(400, 'INCONSISTENT_IDENTITY', 'The supplied images do not appear to show the same person', { results, similarity: round(sim) });
     }
   }
+  for (let i = 0; i < accepted.length; i++) {
+    for (let j = i + 1; j < accepted.length; j++) {
+      const sim = dot(accepted[i].embedding, accepted[j].embedding);
+      if (sim < pairFloor) {
+        throw new AppError(400, 'INCONSISTENT_IDENTITY', 'The supplied images do not appear to show the same person', { results, similarity: round(sim) });
+      }
+    }
+  }
 
-  // Prevent enrolling the same face under a different identity.
+  // Same identity score the live gallery uses, so a face that would be confused in monitoring
+  // is refused here instead of being stored under a second name.
   const gallery = await loadGallery(ctx.organizationId);
+  const byPerson = new Map<string, Array<{ embedding: number[]; quality: number }>>();
   for (const t of gallery.templates) {
     if (t.personId === id) continue;
-    const sim = Math.max(...accepted.map((a) => dot(a.embedding, t.embedding)));
+    const list = byPerson.get(t.personId) ?? [];
+    list.push({ embedding: t.embedding, quality: typeof t.qualityScore === 'number' && t.qualityScore > 0 ? t.qualityScore : 0.75 });
+    byPerson.set(t.personId, list);
+  }
+  const probes = accepted.map((a) => ({ embedding: a.embedding, quality: a.quality.score }));
+  for (const [personId, templates] of byPerson) {
+    const sim = Math.max(...probes.map((probe) => identityScore(probe.embedding, templates)));
     if (sim >= settings.recognition.knownThreshold) {
-      const other = await RegisteredPerson.findByPk(t.personId);
+      const other = await RegisteredPerson.findByPk(personId);
       throw new AppError(409, 'DUPLICATE_IDENTITY', `This face matches an existing registration (${other?.referenceId ?? 'unknown reference'})`, {
         results,
-        matchedPersonId: t.personId,
+        matchedPersonId: personId,
         similarity: round(sim),
       });
     }
@@ -287,11 +334,49 @@ export async function enroll(
 }
 
 /**
+ * Aborts a registration that never received a face. The person row is removed immediately so they
+ * do not stay in recognition or occupy the reference ID. Enrolled people still use the hold-period delete.
+ */
+export async function cancelRegistration(ctx: AuthContext, id: string, ip: string | null) {
+  const p = await findPerson(ctx, id);
+  const templates = p.templates?.length ?? 0;
+  if (!canDiscardRegistration(p.enrollmentStatus, templates)) {
+    throw AppError.conflict('This registration already has a face enrolled. Suspend or mark the person inactive, then delete after the hold period.');
+  }
+  await sequelize.transaction(async (transaction) => {
+    await p.update({ enrollmentStatus: 'REVOKED', status: 'INACTIVE' }, { transaction });
+    await p.destroy({ transaction });
+    await audit(
+      {
+        organizationId: ctx.organizationId,
+        userId: ctx.userId,
+        action: 'REGISTRATION_CANCELLED',
+        entityType: 'registered_person',
+        entityId: id,
+        ipAddress: ip,
+        metadata: { referenceId: p.referenceId },
+      },
+      transaction,
+    );
+  });
+  return { cancelled: true };
+}
+
+/**
  * Deletes a registration: biometric templates are hard-deleted immediately (verified), the person
  * row is soft-deleted and later purged by the retention job.
  */
 export async function deletePerson(ctx: AuthContext, id: string, ip: string | null) {
   const p = await findPerson(ctx, id);
+  const hold = deletionHold(p.status, p.statusChangedAt);
+  if (!hold.canDelete) {
+    const when = hold.deleteAvailableAt ? new Date(hold.deleteAvailableAt).toISOString().slice(0, 10) : null;
+    throw AppError.conflict(
+      p.status === 'ACTIVE'
+        ? 'Suspend or mark the person inactive before deleting. Deletion is available 7 days after that change.'
+        : `Deletion is available on ${when}, 7 days after this person was ${p.status === 'SUSPENDED' ? 'suspended' : 'marked inactive'}.`,
+    );
+  }
   await sequelize.transaction(async (transaction) => {
     const removed = await FaceTemplate.destroy({ where: { registeredPersonId: id }, transaction });
     const remaining = await FaceTemplate.count({ where: { registeredPersonId: id }, transaction });
@@ -307,8 +392,37 @@ export async function deletePerson(ctx: AuthContext, id: string, ip: string | nu
 
 function dot(a: number[], b: number[]): number {
   let s = 0;
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) s += a[i] * b[i];
   return s;
+}
+
+/** Matches ai-service gallery.fuse_identity_score: centroid first, outlier templates ignored. */
+const OUTLIER_GAP = 0.12;
+
+function identityScore(probe: number[], templates: Array<{ embedding: number[]; quality: number }>): number {
+  if (!templates.length || !probe.length) return -1;
+  const dim = probe.length;
+  const centroid = new Array<number>(dim).fill(0);
+  let weightSum = 0;
+  let templateMax = -1;
+  for (const t of templates) {
+    const weight = Math.max(0.25, Math.min(1, t.quality));
+    weightSum += weight;
+    for (let i = 0; i < dim; i++) centroid[i] += (t.embedding[i] ?? 0) * weight;
+    templateMax = Math.max(templateMax, dot(probe, t.embedding));
+  }
+  if (weightSum <= 0) return templateMax;
+  let norm = 0;
+  for (let i = 0; i < dim; i++) {
+    centroid[i] /= weightSum;
+    norm += centroid[i] * centroid[i];
+  }
+  norm = Math.sqrt(norm) || 1;
+  let centroidSim = 0;
+  for (let i = 0; i < dim; i++) centroidSim += probe[i] * (centroid[i] / norm);
+  if (templateMax <= centroidSim + OUTLIER_GAP) return 0.8 * centroidSim + 0.2 * templateMax;
+  return centroidSim;
 }
 
 function round(n: number) {

@@ -105,21 +105,64 @@ class RecognitionPipeline:
                 decision = tracker.finalize(gone, policy)
                 if decision:
                     events.append(self._event(gone, decision, gone.last_seen, policy))
-            tracks = tracker.assign([f.bbox for f, *_ in analysed], now, policy)
+            tracks = tracker.assign(
+                [f.bbox for f, *_ in analysed],
+                now,
+                policy,
+                [emb if ok else None for (_, _, ok, emb) in analysed],
+            )
+            matched = []
             for (f, q, ok, emb), track in zip(analysed, tracks):
                 person_id, best, second = gallery.match(emb) if emb is not None else (None, None, None)
-                label = classify(ok, best, second, policy)
+                label = classify(ok, best, second, policy, gallery.person_count)
+                matched.append(
+                    {
+                        "face": f,
+                        "quality": q,
+                        "ok": ok,
+                        "embedding": emb,
+                        "track": track,
+                        "person_id": person_id,
+                        "best": best,
+                        "label": label,
+                    }
+                )
+            # One registered person cannot be two faces in the same frame. The stronger face
+            # keeps the name; the other is left uncertain instead of borrowing it.
+            claimed: dict[str, int] = {}
+            for index, item in enumerate(matched):
+                person_id = item["person_id"]
+                if item["label"] != "KNOWN" or not person_id:
+                    continue
+                previous = claimed.get(person_id)
+                score = item["best"] if item["best"] is not None else -1.0
+                if previous is None:
+                    claimed[person_id] = index
+                    continue
+                previous_score = matched[previous]["best"] if matched[previous]["best"] is not None else -1.0
+                loser = previous if score >= previous_score else index
+                if score >= previous_score:
+                    claimed[person_id] = index
+                matched[loser]["label"] = "UNCERTAIN"
+                matched[loser]["person_id"] = None
+
+            for item in matched:
+                f = item["face"]
+                q = item["quality"]
+                label = item["label"]
+                track = item["track"]
+                person_id = item["person_id"] if label == "KNOWN" else None
                 track.observations.append(
                     Observation(
                         t=now,
                         label=label,
-                        person_id=person_id if label == "KNOWN" else None,
-                        similarity=best,
+                        person_id=person_id,
+                        similarity=item["best"],
                         quality=q.score,
-                        embedding=emb,
+                        embedding=item["embedding"],
                     )
                 )
-                if policy.capture_evidence and ok and label != "KNOWN" and q.score > track.best_quality:
+                if policy.capture_evidence and item["ok"] and label != "KNOWN" and q.score > track.best_quality:
                     # Keep a reference only; JPEG encoding is deferred until an event is emitted.
                     track.best_quality = q.score
                     track.evidence_frame = img
@@ -130,13 +173,15 @@ class RecognitionPipeline:
                     events.append(self._event(track, decision, now, policy))
 
                 display, disp_person, disp_sim = track.display_label()
+                if display != "KNOWN":
+                    disp_person = None
                 face_results.append(
                     {
                         "trackId": track.id,
                         "bbox": list(f.bbox),
                         "label": display,
                         "personId": disp_person,
-                        "personName": gallery.name_for(disp_person),
+                        "personName": gallery.name_for(disp_person) if display == "KNOWN" else None,
                         "similarity": None if disp_sim is None else round(disp_sim, 4),
                         "quality": round(q.score, 4),
                     }
