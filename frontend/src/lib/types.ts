@@ -31,20 +31,32 @@ export interface PageMeta {
 export type FeatureKey =
   | 'dashboard'
   | 'liveMonitoring'
+  | 'multiCameraDashboard'
   | 'cameraManagement'
+  | 'objectDetection'
+  | 'humanDetection'
+  | 'vehicleDetection'
+  | 'intrusionDetection'
+  | 'restrictedAreaDetection'
+  | 'motionDetection'
   | 'faceRegistration'
+  | 'licensePlateRecognition'
   | 'unknownAlerts'
+  | 'advancedAnalytics'
   | 'detectionHistory'
   | 'evidenceCapture'
   | 'reportsExport'
+  | 'exportDownload'
   | 'notifications'
   | 'emailAlerts'
   | 'pushAlerts'
+  | 'apiAccess'
   | 'userManagement'
   | 'settings'
   | 'auditLogs';
 
-export type OrganizationStatus = 'PROVISIONING' | 'ACTIVE' | 'SUSPENDED' | 'FAILED';
+export type OrganizationStatus = 'PROVISIONING' | 'PENDING' | 'ACTIVE' | 'SUSPENDED' | 'ON_HOLD' | 'DEACTIVATED' | 'ARCHIVED' | 'FAILED';
+export type RetentionMode = 'DRY_RUN' | 'ENFORCE';
 
 export interface CurrentUser {
   id: string;

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Op, type WhereOptions } from 'sequelize';
-import { Camera, DetectionEvent, sequelize } from '../models';
+import { Organization, Camera, DetectionEvent, sequelize } from '../models';
 import type { CameraSchedule, CameraType } from '../models/Camera';
 import { cipher } from '../utils/cipher';
 import { AppError } from '../utils/errors';
@@ -21,6 +21,7 @@ import {
 } from './ingestion.service';
 import { signMonitorTicket } from './monitorTicket.service';
 import { emitToPreview } from '../sockets/emitter';
+import { forgetPreview } from '../sockets/previewCache';
 import { assertCameraInScope, cameraScopeWhere } from './scope';
 import type { AuthContext } from '../types/auth';
 
@@ -105,6 +106,11 @@ export async function createCamera(ctx: AuthContext, input: CameraInput & { came
     streamReference = (await assertCameraUrlAllowed(input.streamUrl!, input.cameraType, cameraNetworks, blockedCameraNetworks)).toString();
   }
   return sequelize.transaction(async (transaction) => {
+    const org = await Organization.findByPk(ctx.organizationId, { transaction });
+    if (org?.cameraLimit != null) {
+      const existing = await Camera.count({ where: { organizationId: ctx.organizationId }, transaction });
+      if (existing >= org.cameraLimit) throw AppError.conflict(`This organization is limited to ${org.cameraLimit} cameras`);
+    }
     const cam = await Camera.create(
       {
         organizationId: ctx.organizationId,
@@ -202,6 +208,10 @@ export async function testConnection(ctx: AuthContext, id: string, ip: string | 
 export async function startMonitoring(ctx: AuthContext, id: string, ip: string | null) {
   const cam = await load(ctx, id);
   if (!cam.isActive) throw AppError.badRequest('Camera is deactivated');
+  if (!ctx.features.has('multiCameraDashboard')) {
+    const others = await Camera.count({ where: { organizationId: ctx.organizationId, monitoringEnabled: true, id: { [Op.ne]: cam.id } } });
+    if (others >= 1) throw AppError.forbidden('Multi-camera monitoring is not enabled for this organization');
+  }
   let monitorTicket: string | undefined;
   if (cam.cameraType === 'BROWSER') {
     // Reuse the live ticket so a second device joining the same camera doesn't cut off the first.
@@ -235,7 +245,8 @@ export async function startMonitoring(ctx: AuthContext, id: string, ip: string |
 export async function stopMonitoring(ctx: AuthContext, id: string, ip: string | null, via?: 'monitor-device') {
   const cam = await load(ctx, id);
   await cam.update({ monitoringEnabled: false, monitorTicketId: null });
-  if (cam.cameraType === 'BROWSER') emitToPreview(cam.id, 'camera:preview:status', { cameraId: cam.id, monitoring: false });
+  forgetPreview(cam.id);
+  emitToPreview(cam.id, 'camera:preview:status', { cameraId: cam.id, monitoring: false });
   if (NETWORK_TYPES.has(cam.cameraType)) await stopNetworkStream(cam);
   await setCameraStatus(cam, cam.isActive ? 'OFFLINE' : 'DISABLED');
   await audit({

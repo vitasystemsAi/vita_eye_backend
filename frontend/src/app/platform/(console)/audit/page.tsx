@@ -21,12 +21,12 @@ interface PlatformAuditEntry {
 export default function PlatformAuditPage() {
   const [organizationId, setOrganizationId] = useState('');
   const { data, loading, error, reload } = useApi<PlatformAuditEntry[]>('/platform/audit-logs', { organizationId, limit: 300 });
-  const { data: orgs } = useApi<ClientRow[]>('/platform/organizations');
+  const { data: orgs } = useApi<ClientRow[]>('/platform/organizations', { pageSize: 100 });
   const names = useMemo(() => new Map((orgs ?? []).map((o) => [o.id, o.name])), [orgs]);
 
   return (
     <>
-      <PageHeader title="Platform audit" icon={<ScrollText className="h-5 w-5" />} description="Every platform sign-in, registration, plan change, password view or reset, hold and client view." />
+      <PageHeader title="Platform audit" icon={<ScrollText className="h-5 w-5" />} description="Sign-ins, registrations, feature and retention changes, setup links, account holds, and live-feed access. Passwords and reset tokens are never stored here." />
       <Card>
         <div className="flex flex-wrap items-center gap-3 border-b border-ink-700/70 px-4 py-3">
           <Select value={organizationId} onChange={(e) => setOrganizationId(e.target.value)} className="max-w-xs">

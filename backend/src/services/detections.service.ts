@@ -1,7 +1,7 @@
 import { Op, type Order, type WhereOptions } from 'sequelize';
 import { logger } from '../config/logger';
 import { redis } from '../config/redis';
-import { Camera, DetectionEvent, EventEvidence, EventNote, RegisteredPerson, User, sequelize } from '../models';
+import { Camera, DetectionEvent, EventEvidence, EventNote, Organization, RegisteredPerson, User, sequelize } from '../models';
 import type { EventType, EvidenceType, ReviewStatus } from '../models/DetectionEvent';
 import { emitToOrg } from '../sockets/emitter';
 import { AppError } from '../utils/errors';
@@ -12,6 +12,7 @@ import { createEvidenceRow, writeEvidenceFile } from './evidence.service';
 import { notifyForEvent } from './notifications.service';
 import { assertCameraInScope, cameraScopeWhere } from './scope';
 import { getSettings } from './settings.service';
+import { organizationStorageBytes } from './storageUsage.service';
 import type { AuthContext } from '../types/auth';
 
 const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
@@ -59,6 +60,14 @@ export function presentEventSummary(e: DetectionEvent) {
 export async function recordEvents(organizationId: string, camera: Camera, events: ConfirmedEvent[]) {
   const settings = await getSettings(organizationId);
   const saved: DetectionEvent[] = [];
+  let storageOpen = true;
+  if (settings.events.captureEvidence) {
+    const org = await Organization.findByPk(organizationId);
+    if (org?.storageLimitBytes != null && (await organizationStorageBytes(organizationId)) >= org.storageLimitBytes) {
+      storageOpen = false;
+      logger.warn({ organizationId, limit: org.storageLimitBytes }, 'Evidence capture paused: storage limit reached');
+    }
+  }
 
   for (const ev of events) {
     let eventType: EventType = ev.eventType;
@@ -88,7 +97,7 @@ export async function recordEvents(organizationId: string, camera: Camera, event
 
     const files: Array<{ type: EvidenceType; file: Awaited<ReturnType<typeof writeEvidenceFile>> }> = [];
     try {
-      if (settings.events.captureEvidence && eventType !== 'KNOWN') {
+      if (storageOpen && settings.events.captureEvidence && eventType !== 'KNOWN') {
         const images: Array<[EvidenceType, Buffer | null]> = [
           ['FACE', decodeJpeg(ev.evidenceFaceJpegB64)],
           ['SNAPSHOT', decodeJpeg(ev.evidenceJpegB64)],

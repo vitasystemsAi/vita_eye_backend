@@ -3,7 +3,7 @@ import { Op } from 'sequelize';
 import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { enabledFeatures, filterPermissions } from '../config/features';
-import { Organization, PasswordResetToken, RefreshToken, User, sequelize } from '../models';
+import { Organization, PasswordResetRequest, PasswordResetToken, RefreshToken, User, sequelize } from '../models';
 import type { OrganizationStatus } from '../models/Organization';
 import { AppError } from '../utils/errors';
 import { randomToken, sha256 } from '../utils/crypto';
@@ -11,7 +11,8 @@ import { hashPassword, needsRehash, verifyPassword } from '../utils/password';
 import { audit } from './audit.service';
 import { roleById } from './rbac.service';
 import { emailConfigured, escapeHtml, sendEmail } from './email.service';
-import { syncClientPassword } from './clientCredentials.service';
+import { forgetClientPassword } from './clientCredentials.service';
+import { impersonationAllowed, loginAllowed, loginBlockMessage } from '../utils/accountPolicy';
 import { organizationForEmail, runInTenant } from './tenancy.service';
 import type { AuthContext } from '../types/auth';
 
@@ -67,9 +68,11 @@ export function organizationFromToken(token: string | undefined): string | null 
   return prefix && token!.includes('.') && UUID_RE.test(prefix) ? prefix : null;
 }
 
-/** Held (suspended) organizations stay reachable only through platform "view as" sessions. */
+/** Non-active organizations stay reachable only through platform "view as" sessions. */
 function organizationUsable(status: OrganizationStatus | undefined, impersonatedBy: string | null | undefined) {
-  return status === 'ACTIVE' || (Boolean(impersonatedBy) && status === 'SUSPENDED');
+  if (!status) return false;
+  if (loginAllowed(status)) return true;
+  return Boolean(impersonatedBy) && impersonationAllowed(status);
 }
 
 /** Creates a session in the current tenant database. */
@@ -156,9 +159,9 @@ async function loginInCurrentTenant(email: string, password: string, client: Cli
     throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid email or password');
   }
 
-  if (user.organization?.status === 'SUSPENDED') {
-    await audit({ organizationId: user.organizationId, userId: user.id, action: 'LOGIN_BLOCKED_ON_HOLD', entityType: 'user', entityId: user.id, ipAddress: client.ip });
-    throw new AppError(403, 'ORGANIZATION_ON_HOLD', 'This organization account is on hold. Contact VITA Systems support.');
+  if (user.organization && !loginAllowed(user.organization.status)) {
+    await audit({ organizationId: user.organizationId, userId: user.id, action: 'LOGIN_BLOCKED_ON_HOLD', entityType: 'user', entityId: user.id, ipAddress: client.ip, metadata: { status: user.organization.status } });
+    throw new AppError(403, 'ORGANIZATION_ON_HOLD', loginBlockMessage(user.organization.status));
   }
   if (user.status !== 'ACTIVE' || user.organization?.status !== 'ACTIVE') {
     await audit({ organizationId: user.organizationId, userId: user.id, action: 'LOGIN_BLOCKED_DISABLED', entityType: 'user', entityId: user.id, ipAddress: client.ip });
@@ -290,7 +293,8 @@ export async function resetPassword(token: string, newPassword: string, ip: stri
       await row.update({ usedAt: new Date() }, { transaction });
       await User.update({ passwordHash, failedLoginAttempts: 0, lockedUntil: null }, { where: { id: user.id }, transaction });
       await RefreshToken.update({ revokedAt: new Date() }, { where: { userId: user.id, revokedAt: null }, transaction });
-      await syncClientPassword(user.id, newPassword, user.email, transaction);
+      await forgetClientPassword(user.id, transaction);
+      await PasswordResetRequest.update({ usedAt: new Date() }, { where: { tokenHash: sha256(token), usedAt: null }, transaction });
       await audit({ organizationId: user.organizationId, userId: user.id, action: 'PASSWORD_RESET_COMPLETED', entityType: 'user', entityId: user.id, ipAddress: ip }, transaction);
     });
   });

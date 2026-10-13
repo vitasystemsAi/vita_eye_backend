@@ -16,8 +16,15 @@ const schema = z.object({
 });
 type FormValues = z.infer<typeof schema>;
 
-function safeNext(next: string | null): string {
-  return next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
+function safeNext(next: string | null, fallback: string): string {
+  return next && next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/login') ? next : fallback;
+}
+
+function signInError(err: unknown): string {
+  if (err instanceof ApiError && (err.code === 'ACCOUNT_LOCKED' || err.code === 'ORGANIZATION_ON_HOLD' || err.code === 'ACCOUNT_DISABLED')) return err.message;
+  if (err instanceof ApiError && err.code === 'RATE_LIMITED') return 'Too many attempts. Please wait a few minutes and try again.';
+  if (err instanceof ApiError && err.status === 401) return 'Invalid email or password.';
+  return err instanceof Error ? err.message : 'Sign-in failed';
 }
 
 function LoginForm() {
@@ -32,14 +39,22 @@ function LoginForm() {
 
   async function onSubmit(values: FormValues) {
     setError(null);
+    const next = params.get('next');
     try {
       await api.post('/auth/login', values, { noRefresh: true });
-      router.replace(safeNext(params.get('next')));
+      router.replace(safeNext(next?.startsWith('/platform') ? null : next, '/dashboard'));
+      return;
     } catch (err) {
-      if (err instanceof ApiError && (err.code === 'ACCOUNT_LOCKED' || err.code === 'ORGANIZATION_ON_HOLD' || err.code === 'ACCOUNT_DISABLED')) setError(err.message);
-      else if (err instanceof ApiError && err.code === 'RATE_LIMITED') setError('Too many attempts. Please wait a few minutes and try again.');
-      else if (err instanceof ApiError && err.status === 401) setError('Invalid email or password.');
-      else setError(err instanceof Error ? err.message : 'Sign-in failed');
+      if (!(err instanceof ApiError) || err.status !== 401) {
+        setError(signInError(err));
+        return;
+      }
+    }
+    try {
+      await api.post('/platform/auth/login', values, { noRefresh: true });
+      router.replace(safeNext(next?.startsWith('/platform') ? next : null, '/platform/dashboard'));
+    } catch (err) {
+      setError(signInError(err));
     }
   }
 
@@ -64,14 +79,9 @@ function LoginForm() {
         <Button type="submit" className="w-full" loading={isSubmitting} icon={<LogIn className="h-4 w-4" />}>
           Sign in
         </Button>
-        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-          <Link href="/forgot-password" className="text-brand-400 hover:text-brand-300">
-            Forgot your password?
-          </Link>
-          <Link href="/platform/login" className="text-ink-400 hover:text-ink-200">
-            VITA Systems platform admin
-          </Link>
-        </div>
+        <Link href="/forgot-password" className="inline-block text-sm text-brand-400 hover:text-brand-300">
+          Forgot your password?
+        </Link>
       </form>
     </>
   );

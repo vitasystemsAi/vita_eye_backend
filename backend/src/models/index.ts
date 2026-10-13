@@ -9,7 +9,8 @@ import { Camera } from './Camera';
 import { DetectionEvent, EventEvidence, EventNote } from './DetectionEvent';
 import { Notification } from './Notification';
 import { AppSetting, AuditLog } from './AuditLog';
-import { ClientCredential, PlatformAdmin, PlatformAuditLog, TenantUserDirectory } from './Platform';
+import { ClientCredential, OrganizationHold, PasswordResetRequest, PlatformAdmin, PlatformAuditLog, ProvisioningJob, RetentionCleanupRun, TenantUserDirectory } from './Platform';
+import { RetentionCleanupLog } from './RetentionLog';
 
 Role.belongsToMany(Permission, { through: RolePermission, foreignKey: 'roleId', otherKey: 'permissionId', as: 'permissions' });
 Permission.belongsToMany(Role, { through: RolePermission, foreignKey: 'permissionId', otherKey: 'roleId', as: 'roles' });
@@ -58,6 +59,7 @@ const TENANT_MODELS: Array<ModelStatic<Model>> = [
   Notification,
   AuditLog,
   AppSetting,
+  RetentionCleanupLog,
 ];
 for (const model of TENANT_MODELS) {
   Object.defineProperty(model, '_schema', {
@@ -90,4 +92,9 @@ export {
   TenantUserDirectory,
   ClientCredential,
   PlatformAuditLog,
+  ProvisioningJob,
+  OrganizationHold,
+  PasswordResetRequest,
+  RetentionCleanupRun,
+  RetentionCleanupLog,
 };

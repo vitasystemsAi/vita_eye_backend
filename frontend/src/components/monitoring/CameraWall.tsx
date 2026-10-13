@@ -59,9 +59,14 @@ function IconButton({ title, onClick, children }: { title: string; onClick: () =
 function Picture({ camera }: { camera: Camera }) {
   const { session, status } = useMonitor();
   const localBrowser = camera.cameraType === 'BROWSER' && session?.cameraId === camera.id && status !== 'other-tab';
-  if (camera.cameraType === 'BROWSER' && !camera.monitoringEnabled) return <BrowserStage camera={camera} />;
-  if (localBrowser) return <BrowserStage camera={camera} />;
-  if (camera.monitoringEnabled) return <RemotePreview cameras={[camera]} bare />;
+  if (camera.monitoringEnabled) {
+    return (
+      <>
+        {localBrowser && <BrowserStage camera={camera} />}
+        <RemotePreview cameras={[camera]} bare passthrough={localBrowser} />
+      </>
+    );
+  }
   if (camera.cameraType === 'BROWSER') return <BrowserStage camera={camera} />;
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-black text-ink-500">

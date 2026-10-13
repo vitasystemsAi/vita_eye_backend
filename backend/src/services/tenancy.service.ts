@@ -3,6 +3,7 @@ import { logger } from '../config/logger';
 import { enabledFeatures, type FeatureKey } from '../config/features';
 import { Organization, TenantUserDirectory, User } from '../models';
 import type { OrganizationStatus } from '../models/Organization';
+import type { RetentionMode } from '../utils/retentionPolicy';
 import { currentTenant, runInPrimaryDatabase, runWithTenant } from '../db/tenantContext';
 
 export interface TenantInfo {
@@ -12,6 +13,11 @@ export interface TenantInfo {
   status: OrganizationStatus;
   features: Set<FeatureKey>;
   detectionRetentionDays: number | null;
+  retentionGraceDays: number;
+  retentionMode: RetentionMode;
+  timezone: string;
+  cameraLimit: number | null;
+  storageLimitBytes: number | null;
 }
 
 const cache = new Map<string, { value: TenantInfo | null; at: number }>();
@@ -25,6 +31,11 @@ function toInfo(org: Organization): TenantInfo {
     status: org.status,
     features: enabledFeatures(org.features),
     detectionRetentionDays: org.detectionRetentionDays ?? null,
+    retentionGraceDays: org.retentionGraceDays ?? 0,
+    retentionMode: org.retentionMode ?? 'ENFORCE',
+    timezone: org.timezone || 'UTC',
+    cameraLimit: org.cameraLimit ?? null,
+    storageLimitBytes: org.storageLimitBytes ?? null,
   };
 }
 

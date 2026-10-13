@@ -1,9 +1,12 @@
 import jwt from 'jsonwebtoken';
+import { Op } from 'sequelize';
 import { env } from '../config/env';
-import { PlatformAdmin, PlatformAuditLog } from '../models';
+import { logger } from '../config/logger';
+import { PasswordResetRequest, PlatformAdmin, PlatformAuditLog } from '../models';
 import { AppError } from '../utils/errors';
-import { randomToken } from '../utils/crypto';
+import { randomToken, sha256 } from '../utils/crypto';
 import { hashPassword, needsRehash, verifyPassword } from '../utils/password';
+import { emailConfigured, escapeHtml, sendEmail } from './email.service';
 import type { PlatformAdminContext } from '../types/auth';
 
 const MAX_FAILED_ATTEMPTS = 5;
@@ -103,4 +106,57 @@ export async function verifyPlatformSession(token: string): Promise<PlatformAdmi
 export async function platformLogout(adminId: string, ip: string | null) {
   await PlatformAdmin.increment('tokenVersion', { where: { id: adminId } });
   await platformAudit({ platformAdminId: adminId, action: 'PLATFORM_LOGOUT', ipAddress: ip });
+}
+
+const RESET_MINUTES = 30;
+
+/** Always responds the same way for unknown emails. The raw token is never audited. */
+export async function requestPlatformPasswordReset(emailRaw: string, ip: string | null): Promise<{ devLink?: string }> {
+  const email = emailRaw.trim().toLowerCase();
+  const admin = await PlatformAdmin.findOne({ where: { email, status: 'ACTIVE' } });
+  await platformAudit({ platformAdminId: admin?.id ?? null, action: 'PLATFORM_PASSWORD_RESET_REQUESTED', ipAddress: ip, metadata: { email } });
+  if (!admin) return {};
+  const secret = randomToken(32);
+  const expiresAt = new Date(Date.now() + RESET_MINUTES * 60_000);
+  await PasswordResetRequest.update({ usedAt: new Date() }, { where: { subjectId: admin.id, kind: 'PLATFORM_ADMIN', usedAt: null } });
+  await PasswordResetRequest.create({
+    kind: 'PLATFORM_ADMIN',
+    subjectId: admin.id,
+    organizationId: null,
+    email,
+    tokenHash: sha256(secret),
+    expiresAt,
+    requestedBy: null,
+    ipAddress: ip,
+  });
+  const link = `${env.PUBLIC_APP_URL.replace(/\/$/, '')}/platform/reset-password?token=${encodeURIComponent(secret)}`;
+  if (emailConfigured()) {
+    try {
+      await sendEmail(
+        email,
+        'VITA EYE platform password reset',
+        `A password reset was requested for the VITA EYE platform console.\n\nThis link works once and expires in ${RESET_MINUTES} minutes:\n${link}\n\nIf you did not request this, ignore this email.`,
+        `<p>A password reset was requested for the VITA EYE platform console.</p><p><a href="${escapeHtml(link)}">Reset your password</a> (one use, ${RESET_MINUTES} minutes).</p>`,
+      );
+      return {};
+    } catch (err) {
+      logger.error({ err: (err as Error).message }, 'Failed to send platform password reset email');
+    }
+  } else if (env.isProduction) {
+    logger.error({ email }, 'Platform password reset requested but SMTP is not configured');
+    return {};
+  }
+  return env.isProduction ? {} : { devLink: link };
+}
+
+export async function resetPlatformPassword(token: string, newPassword: string, ip: string | null) {
+  const row = await PasswordResetRequest.scope('withHash').findOne({
+    where: { tokenHash: sha256(token), kind: 'PLATFORM_ADMIN', usedAt: null, expiresAt: { [Op.gt]: new Date() } },
+  });
+  if (!row) throw AppError.badRequest('This reset link is invalid or has expired');
+  const passwordHash = await hashPassword(newPassword);
+  await PlatformAdmin.update({ passwordHash, failedLoginAttempts: 0, lockedUntil: null }, { where: { id: row.subjectId } });
+  await PlatformAdmin.increment('tokenVersion', { where: { id: row.subjectId } });
+  await row.update({ usedAt: new Date() });
+  await platformAudit({ platformAdminId: row.subjectId, action: 'PLATFORM_PASSWORD_RESET_COMPLETED', ipAddress: ip });
 }

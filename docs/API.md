@@ -122,33 +122,44 @@ revoking every platform session. The first admin is seeded from `PLATFORM_ADMIN_
 below is written to `platform_audit_logs`, and client-side effects are also written to the organization's
 own audit trail.
 
+Operator workflows are in [PLATFORM_ADMIN.md](PLATFORM_ADMIN.md). Passwords are Argon2id hashes. There is no
+endpoint that returns an existing password.
+
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/platform/auth/login` | `{ email, password }`; 5 failures lock for 15 min |
 | POST | `/platform/auth/logout` | |
 | GET | `/platform/auth/me` | |
-| GET | `/platform/features` | feature catalogue (key, label, description) |
-| GET | `/platform/organizations` | clients: status, database, features, retention, primary admin, counts |
-| POST | `/platform/organizations` | register + provision: `{ name, contact*, features[], detectionRetentionDays, admin: { name, email, password? } }` → returns the admin credentials (password generated when omitted) |
-| GET | `/platform/organizations/:id` | detail: users, cameras, stats, recent sign-in activity |
-| PATCH | `/platform/organizations/:id` | `{ name?, contact*?, features?, detectionRetentionDays? }`; applies immediately |
-| POST | `/platform/organizations/:id/hold` | `{ onHold, reason? }`; hold blocks sign-in, revokes sessions, stops streams |
-| POST | `/platform/organizations/:id/credentials/reveal` | decrypts the primary admin password from the vault |
-| POST | `/platform/organizations/:id/credentials/reset` | `{ password? }`; unlocks, revokes sessions, returns the new password |
-| POST | `/platform/organizations/:id/impersonate` | `{ userId? }`; sets organization session cookies for a "view as" session (works while on hold) |
-| GET | `/platform/audit-logs` | `?organizationId&limit` |
+| POST | `/platform/auth/forgot-password` | public; always the same message; emails a 30-minute link |
+| POST | `/platform/auth/reset-password` | public; `{ token, password }`; single use; revokes sessions |
+| GET | `/platform/features` | catalogue: key, label, category, supported, legal note |
+| GET | `/platform/plans` | Starter, Professional, Enterprise limits and included features |
+| GET | `/platform/dashboard` | `?from&to` counts, storage, cameras, recent activity |
+| GET | `/platform/organizations` | `?q&status&page&pageSize` |
+| POST | `/platform/organizations` | register + provision. Returns a one-time setup link only when email was not sent |
+| GET | `/platform/organizations/:id` | profile, features, cameras (no stream secrets), detections, users, retention, audit |
+| GET | `/platform/organizations/:id/detections` | `?page&from&to&cameraId&eventType&reviewStatus` |
+| PATCH | `/platform/organizations/:id` | profile, plan, features, retention, limits; applies on the next request |
+| POST | `/platform/organizations/:id/provision/retry` | same organization and database name; only while `FAILED` |
+| POST | `/platform/organizations/:id/account` | `{ action, reason?, holdType? }` activate, suspend, hold, reactivate, deactivate, archive |
+| POST | `/platform/organizations/:id/holds/:holdId/release` | releases a legal or investigation hold |
+| POST | `/platform/organizations/:id/credentials/reset` | `{ confirmPassword }`; emails a setup link; does not return the old password |
+| POST | `/platform/organizations/:id/impersonate` | `{ userId?, purpose? }`; `LIVE_PREVIEW` or `CONSOLE` |
+| GET | `/platform/audit-logs` | `?organizationId&limit&page` |
 
 **Database per organization.** Registering an organization creates a MySQL database
 `${TENANT_DB_PREFIX:-<DB_NAME>_org_}<slug>_<hex>` using `DB_ADMIN_USER` (or `DB_USER`), runs every
 organization-schema migration on it, and copies the RBAC catalogue. All tenant tables (users, cameras,
 persons, templates, events, evidence, notifications, audit, settings) live there. The primary database keeps
-the control plane: `organizations`, `platform_admins`, `tenant_user_directory` (login email → organization),
-`client_credentials` (AES-256-GCM vault) and `platform_audit_logs`. If provisioning fails, the new database
-is dropped. `npm run db:migrate` upgrades the primary database and then every tenant database.
+the control plane: organizations, subscriptions, holds, provisioning jobs, retention reports, platform admins,
+the login directory, and `platform_audit_logs`. A failed provision keeps the organization row as `FAILED` and
+drops only a database that this attempt created. Retry reuses the same name. `npm run db:migrate` upgrades
+the primary database, then every tenant database, then the control-plane migrations.
 
-**Features and retention.** Disabled features remove their permissions from every user in the organization,
-so the API rejects them as well as the UI hiding them. `detectionRetentionDays` caps the organization's
-event and evidence retention; the hourly retention job deletes older detections in every tenant database.
+**Features and retention.** Disabled features remove their permissions from every user in the organization.
+The retention worker runs at minute 15 of every hour. It deletes by each organization's time zone, grace
+period and mode. Dry run only counts. Legal and investigation holds skip destructive cleanup. Backups are
+not erased by this job.
 
 ## Internal (service-to-service, `X-Internal-Token`, blocked at the edge)
 

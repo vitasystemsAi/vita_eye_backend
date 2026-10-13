@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import * as c from '../controllers/events.controller';
-import { authenticate, requirePermission } from '../middleware/auth';
+import { authenticate, requireFeature, requirePermission } from '../middleware/auth';
 import { sensitiveLimiter } from '../middleware/rateLimit';
 
 export const eventsRouter = Router();
 eventsRouter.use(authenticate);
 eventsRouter.get('/', requirePermission('events:view'), c.list);
-eventsRouter.get('/export', sensitiveLimiter, requirePermission('events:view', 'events:export'), c.exportEvents);
+eventsRouter.get('/export', sensitiveLimiter, requirePermission('events:view', 'events:export'), requireFeature('exportDownload'), c.exportEvents);
 eventsRouter.get('/:id', requirePermission('events:view'), c.get);
 eventsRouter.post('/:id/acknowledge', requirePermission('events:review'), c.acknowledge);
 eventsRouter.post('/:id/investigate', requirePermission('events:review'), c.investigate);

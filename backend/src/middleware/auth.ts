@@ -4,6 +4,7 @@ import { AppError } from '../utils/errors';
 import { buildAuthContext, verifyAccessToken } from '../services/auth.service';
 import { resolveTenant } from '../services/tenancy.service';
 import { runWithTenant, type TenantStore } from '../db/tenantContext';
+import type { FeatureKey } from '../config/features';
 import type { Permission } from '../config/rbac';
 import { env } from '../config/env';
 
@@ -78,6 +79,15 @@ export function requirePermission(...perms: Permission[]) {
     if (!req.auth) return next(AppError.unauthenticated());
     const missing = perms.filter((p) => !req.auth!.permissions.has(p));
     if (missing.length) return next(AppError.forbidden());
+    next();
+  };
+}
+
+export function requireFeature(...keys: FeatureKey[]) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    if (!req.auth) return next(AppError.unauthenticated());
+    const missing = keys.filter((key) => !req.auth!.features.has(key));
+    if (missing.length) return next(AppError.forbidden('This feature is not enabled for the organization'));
     next();
   };
 }

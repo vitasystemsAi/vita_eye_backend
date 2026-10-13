@@ -12,6 +12,7 @@ import { cameraInScope } from '../services/scope';
 import { runInTenant } from '../services/tenancy.service';
 import type { AuthContext } from '../types/auth';
 import { rooms, setIo } from './emitter';
+import { latestPreview } from './previewCache';
 
 const CONTEXT_REFRESH_MS = 60_000;
 const TICKET_RENEW_MS = 6 * 3600_000;
@@ -167,6 +168,8 @@ export function createSocketServer(server: http.Server) {
           const camera = await Camera.findByPk(cameraId, { attributes: ['id', 'organizationId', 'site', 'cameraType', 'monitoringEnabled'] });
           if (!camera || !cameraInScope(ctx, camera)) return reply({ ok: false, error: 'CAMERA_NOT_FOUND' });
           await socket.join(rooms.preview(camera.id));
+          const snapshot = latestPreview(camera.id);
+          if (snapshot) socket.emit('camera:preview', snapshot);
           reply({ ok: true, monitoring: camera.monitoringEnabled });
         } catch (err) {
           logger.warn({ err: (err as Error).message }, 'preview:watch failed');

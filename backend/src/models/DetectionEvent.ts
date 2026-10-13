@@ -33,6 +33,8 @@ export class DetectionEvent extends Model<InferAttributes<DetectionEvent>, Infer
   declare resolvedBy: CreationOptional<string | null>;
   declare resolvedAt: CreationOptional<Date | null>;
   declare resolution: CreationOptional<string | null>;
+  /** Set by an authorized administrator. Retention never deletes a held record. */
+  declare legalHold: CreationOptional<boolean>;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
   declare camera?: NonAttribute<Camera>;
@@ -66,6 +68,7 @@ DetectionEvent.init(
     resolvedBy: { type: DataTypes.UUID, allowNull: true },
     resolvedAt: { type: DataTypes.DATE(3), allowNull: true },
     resolution: { type: DataTypes.STRING(64), allowNull: true },
+    legalHold: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     createdAt: DataTypes.DATE(3),
     updatedAt: DataTypes.DATE(3),
   },

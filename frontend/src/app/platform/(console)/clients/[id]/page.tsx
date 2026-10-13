@@ -1,46 +1,53 @@
 'use client';
 
-import { ArrowLeft, Camera, Database, Eye, History, KeyRound, MonitorPlay, Pause, Play, Save, ShieldAlert, UserPlus, Users } from 'lucide-react';
+import { ArrowLeft, Camera, Database, Eye, KeyRound, MonitorPlay, Save } from 'lucide-react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useState } from 'react';
 import { CameraStatusBadge } from '@/components/badges';
-import { CopyButton, FeatureChecklist, HoldDialog, OrgStatusBadge, PasswordReveal, ResetPasswordDialog, RetentionPicker } from '@/components/platform/ClientControls';
-import { Badge, Button, Card, EmptyState, ErrorBanner, Field, Input, KeyValue, LoadingBlock, PageHeader, StatCard } from '@/components/ui/primitives';
+import { AccountDialog, CopyButton, FeatureChecklist, OrgStatusBadge, ResetPasswordDialog, RetentionPicker, planByCode } from '@/components/platform/ClientControls';
+import { Badge, Button, Card, EmptyState, ErrorBanner, Field, Input, KeyValue, LoadingBlock, PageHeader, Select, StatCard } from '@/components/ui/primitives';
 import { useToast } from '@/components/ui/toast';
 import { api, ApiError, errorMessage } from '@/lib/api';
-import { fmtDateTime, fmtRelative, humanize, ROLE_LABELS } from '@/lib/format';
+import { fmtBytes, fmtDateTime, fmtRelative, humanize, ROLE_LABELS } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
-import { openClientConsole, type ClientDetail, type FeatureInfo, type PlatformOrganization } from '@/lib/platform';
+import { openClientConsole, type ClientDetail, type FeatureInfo, type PlanInfo, type PlatformOrganization } from '@/lib/platform';
 import type { FeatureKey } from '@/lib/types';
 
-function PlanEditor({ org, catalog, onSaved }: { org: PlatformOrganization; catalog: FeatureInfo[]; onSaved: (o: PlatformOrganization) => void }) {
+const READY = new Set(['ACTIVE', 'SUSPENDED', 'ON_HOLD', 'DEACTIVATED', 'ARCHIVED']);
+
+function PlanEditor({ org, catalog, plans, onSaved }: { org: PlatformOrganization; catalog: FeatureInfo[]; plans: PlanInfo[]; onSaved: (o: PlatformOrganization) => void }) {
   const notify = useToast();
-  const initial = () => ({
+  const [draft, setDraft] = useState({
     name: org.name,
+    code: org.code ?? '',
     contactName: org.contactName ?? '',
     contactEmail: org.contactEmail ?? '',
     contactPhone: org.contactPhone ?? '',
+    timezone: org.timezone || 'UTC',
+    subscriptionPlan: org.subscriptionPlan ?? 'PROFESSIONAL',
     features: org.features,
     detectionRetentionDays: org.detectionRetentionDays ?? 30,
+    retentionGraceDays: org.retentionGraceDays ?? 0,
+    retentionMode: org.retentionMode ?? 'ENFORCE',
+    cameraLimit: org.cameraLimit ? String(org.cameraLimit) : '',
+    storageGb: org.storageLimitBytes ? String(Math.round(org.storageLimitBytes / 1024 ** 3)) : '',
   });
-  const [draft, setDraft] = useState(initial);
-  const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
-
-  const dirty = JSON.stringify(draft) !== JSON.stringify(initial());
-  const shortened = org.detectionRetentionDays !== null && draft.detectionRetentionDays < org.detectionRetentionDays;
+  const allowed = planByCode(plans, draft.subscriptionPlan)?.features;
 
   async function save() {
     setSaving(true);
-    setErrors({});
     try {
-      const { data } = await api.patch<PlatformOrganization>(`/platform/organizations/${org.id}`, draft);
+      const { data } = await api.patch<PlatformOrganization>(`/platform/organizations/${org.id}`, {
+        ...draft,
+        cameraLimit: draft.cameraLimit ? Number(draft.cameraLimit) : null,
+        storageLimitBytes: draft.storageGb ? Math.round(Number(draft.storageGb) * 1024 ** 3) : null,
+      });
       onSaved(data);
-      notify('success', 'Plan updated', 'Changes apply to the organization immediately.');
+      notify('success', 'Organization updated', 'Feature and retention changes apply immediately.');
     } catch (err) {
-      if (err instanceof ApiError) setErrors(err.fieldErrors());
-      notify('error', 'Plan not saved', errorMessage(err));
+      notify('error', 'Not saved', err instanceof ApiError ? err.message : errorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -48,44 +55,35 @@ function PlanEditor({ org, catalog, onSaved }: { org: PlatformOrganization; cata
 
   return (
     <Card
-      title="Plan & features"
-      description="Feature access and detection history storage for this organization"
-      actions={
-        <Button size="sm" icon={<Save className="h-3.5 w-3.5" />} loading={saving} disabled={!dirty} onClick={() => void save()}>
-          Save changes
-        </Button>
-      }
+      title="Edit organization"
+      description="Changes apply without a redeploy. Unsupported features cannot be enabled."
+      actions={<Button size="sm" icon={<Save className="h-3.5 w-3.5" />} loading={saving} onClick={() => void save()}>Save changes</Button>}
     >
       <div className="space-y-6 p-5">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div className="md:col-span-2">
-            <Field label="Organization name" error={errors.name}>
-              <Input value={draft.name} maxLength={160} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
-            </Field>
-          </div>
-          <Field label="Contact person" error={errors.contactName}>
-            <Input value={draft.contactName} maxLength={120} onChange={(e) => setDraft({ ...draft, contactName: e.target.value })} />
+          <Field label="Name"><Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></Field>
+          <Field label="Code"><Input value={draft.code} onChange={(e) => setDraft({ ...draft, code: e.target.value })} /></Field>
+          <Field label="Email"><Input value={draft.contactEmail} onChange={(e) => setDraft({ ...draft, contactEmail: e.target.value })} /></Field>
+          <Field label="Phone"><Input value={draft.contactPhone} onChange={(e) => setDraft({ ...draft, contactPhone: e.target.value })} /></Field>
+          <Field label="Contact"><Input value={draft.contactName} onChange={(e) => setDraft({ ...draft, contactName: e.target.value })} /></Field>
+          <Field label="Time zone"><Input value={draft.timezone} onChange={(e) => setDraft({ ...draft, timezone: e.target.value })} /></Field>
+          <Field label="Plan">
+            <Select value={draft.subscriptionPlan} onChange={(e) => setDraft({ ...draft, subscriptionPlan: e.target.value })}>
+              {plans.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+            </Select>
           </Field>
-          <Field label="Contact email" error={errors.contactEmail}>
-            <Input type="email" value={draft.contactEmail} maxLength={255} onChange={(e) => setDraft({ ...draft, contactEmail: e.target.value })} />
-          </Field>
-          <Field label="Contact phone" error={errors.contactPhone}>
-            <Input value={draft.contactPhone} maxLength={40} onChange={(e) => setDraft({ ...draft, contactPhone: e.target.value })} />
+          <Field label="Camera limit"><Input value={draft.cameraLimit} onChange={(e) => setDraft({ ...draft, cameraLimit: e.target.value })} /></Field>
+          <Field label="Storage limit (GB)"><Input value={draft.storageGb} onChange={(e) => setDraft({ ...draft, storageGb: e.target.value })} /></Field>
+          <Field label="Grace days"><Input type="number" value={draft.retentionGraceDays} onChange={(e) => setDraft({ ...draft, retentionGraceDays: Number(e.target.value) })} /></Field>
+          <Field label="Cleanup mode">
+            <Select value={draft.retentionMode} onChange={(e) => setDraft({ ...draft, retentionMode: e.target.value as 'DRY_RUN' | 'ENFORCE' })}>
+              <option value="DRY_RUN">Dry run</option>
+              <option value="ENFORCE">Enforce deletion</option>
+            </Select>
           </Field>
         </div>
-        <div>
-          <p className="label">Features</p>
-          <FeatureChecklist catalog={catalog} value={draft.features} onChange={(features: FeatureKey[]) => setDraft({ ...draft, features })} />
-        </div>
-        <div>
-          <p className="label">Detection history storage</p>
-          <RetentionPicker value={draft.detectionRetentionDays} onChange={(d) => setDraft({ ...draft, detectionRetentionDays: d })} error={errors.detectionRetentionDays} />
-          {shortened && (
-            <p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-              Shortening the limit permanently deletes detections and evidence older than {draft.detectionRetentionDays} days at the next hourly cleanup.
-            </p>
-          )}
-        </div>
+        <FeatureChecklist catalog={catalog} value={draft.features} onChange={(features: FeatureKey[]) => setDraft({ ...draft, features })} allowed={allowed} />
+        <RetentionPicker value={draft.detectionRetentionDays} onChange={(days) => setDraft({ ...draft, detectionRetentionDays: days })} max={planByCode(plans, draft.subscriptionPlan)?.retentionMaxDays} />
       </div>
     </Card>
   );
@@ -96,17 +94,18 @@ export default function ClientDetailPage() {
   const notify = useToast();
   const { data, loading, error, reload, setData } = useApi<ClientDetail>(`/platform/organizations/${id}`);
   const { data: catalog } = useApi<FeatureInfo[]>('/platform/features');
+  const { data: plans } = useApi<PlanInfo[]>('/platform/plans');
   const [resetOpen, setResetOpen] = useState(false);
-  const [holdOpen, setHoldOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [opening, setOpening] = useState<string | null>(null);
-  const [passwordVersion, setPasswordVersion] = useState(0);
+  const [retrying, setRetrying] = useState(false);
 
   if (loading && !data) return <LoadingBlock />;
   if (!data) return <ErrorBanner error={error} onRetry={reload} />;
-  const { organization: org, stats } = data;
-  const ready = org.status === 'ACTIVE' || org.status === 'SUSPENDED';
+  const org = data.organization;
+  const ready = READY.has(org.status);
 
-  async function open(key: string, opts: { userId?: string; path?: string } = {}) {
+  async function open(key: string, opts: { userId?: string; path?: string; purpose?: 'LIVE_PREVIEW' } = {}) {
     setOpening(key);
     try {
       await openClientConsole(org.id, opts);
@@ -117,87 +116,88 @@ export default function ClientDetailPage() {
     }
   }
 
-  const setOrg = (o: PlatformOrganization) => setData((prev) => (prev ? { ...prev, organization: o } : prev));
+  async function retry() {
+    setRetrying(true);
+    try {
+      await api.post(`/platform/organizations/${org.id}/provision/retry`);
+      notify('success', 'Provisioning retried', org.name);
+      await reload();
+    } catch (err) {
+      notify('error', 'Retry failed', errorMessage(err));
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  const setOrg = (next: PlatformOrganization) => setData((prev) => (prev ? { ...prev, organization: next } : prev));
 
   return (
     <>
-      <Link href="/platform/clients" className="mb-3 inline-flex items-center gap-1 text-sm text-ink-400 hover:text-ink-100">
-        <ArrowLeft className="h-4 w-4" /> All clients
-      </Link>
+      <Link href="/platform/clients" className="mb-3 inline-flex items-center gap-1 text-sm text-ink-400 hover:text-ink-100"><ArrowLeft className="h-4 w-4" /> All clients</Link>
       <PageHeader
         title={org.name}
         icon={<Database className="h-5 w-5" />}
-        description={
-          <span className="inline-flex flex-wrap items-center gap-2">
-            <OrgStatusBadge status={org.status} />
-            <span className="font-mono text-xs text-ink-400">{org.databaseName ?? 'primary database'}</span>
-            {org.holdReason && <span className="text-xs text-amber-300">On hold: {org.holdReason}</span>}
-          </span>
-        }
+        description={<span className="inline-flex flex-wrap items-center gap-2"><OrgStatusBadge status={org.status} /><span className="font-mono text-xs text-ink-400">{org.code}</span>{org.holdReason && <span className="text-xs text-amber-300">{org.holdReason}</span>}</span>}
         actions={
           <>
-            <Button icon={<Eye className="h-4 w-4" />} disabled={!ready || !data.admin} loading={opening === 'admin'} onClick={() => void open('admin')}>
-              View as admin
-            </Button>
-            <Button variant="secondary" icon={<MonitorPlay className="h-4 w-4" />} disabled={!ready || !data.admin} loading={opening === 'monitoring'} onClick={() => void open('monitoring', { path: '/monitoring' })}>
-              Live monitoring
-            </Button>
-            <Button variant={org.status === 'SUSPENDED' ? 'primary' : 'danger'} icon={org.status === 'SUSPENDED' ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />} disabled={!ready} onClick={() => setHoldOpen(true)}>
-              {org.status === 'SUSPENDED' ? 'Reactivate' : 'Put on hold'}
-            </Button>
+            <Button icon={<Eye className="h-4 w-4" />} disabled={!ready || !data.admin} loading={opening === 'admin'} onClick={() => void open('admin')}>Open dashboard</Button>
+            <Button variant="secondary" icon={<MonitorPlay className="h-4 w-4" />} disabled={!ready || !data.admin} loading={opening === 'live'} onClick={() => void open('live', { purpose: 'LIVE_PREVIEW', path: '/monitoring' })}>Live preview</Button>
+            <Button variant="secondary" disabled={!ready} onClick={() => setAccountOpen(true)}>Account</Button>
+            {org.status === 'FAILED' && <Button loading={retrying} onClick={() => void retry()}>Retry provisioning</Button>}
           </>
         }
       />
 
-      {stats && (
+      {org.provisioningError && <p className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{org.provisioningError}</p>}
+
+      {data.stats && (
         <div className="mb-6 grid grid-cols-2 gap-4 xl:grid-cols-4">
-          <StatCard label="Users" value={stats.users} icon={<Users className="h-5 w-5" />} />
-          <StatCard label="Cameras" value={stats.cameras} sub={`${stats.camerasOnline} online`} tone="green" icon={<Camera className="h-5 w-5" />} />
-          <StatCard label="Registered persons" value={stats.persons} tone="neutral" icon={<UserPlus className="h-5 w-5" />} />
-          <StatCard label="Detections (24h)" value={stats.events24h} sub={`${stats.unknown24h} unknown / uncertain`} tone={stats.unknown24h ? 'red' : 'amber'} icon={<ShieldAlert className="h-5 w-5" />} />
+          <StatCard label="Cameras" value={data.stats.cameras} sub={`${data.stats.camerasOnline} online · ${data.stats.camerasOffline ?? 0} offline`} icon={<Camera className="h-5 w-5" />} />
+          <StatCard label="Detections" value={data.stats.eventsTotal} sub={`${data.stats.events24h} in 24h`} icon={<Database className="h-5 w-5" />} />
+          <StatCard label="Storage" value={fmtBytes(data.storageUsedBytes)} sub={org.storageLimitBytes ? `of ${fmtBytes(org.storageLimitBytes)}` : 'No limit'} icon={<Database className="h-5 w-5" />} />
+          <StatCard label="Users" value={data.stats.users} icon={<Eye className="h-5 w-5" />} />
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <div className="space-y-6 xl:col-span-2">
-          <Card title="Cameras" description="Camera access configured by this organization">
-            {!data.cameras.length ? (
-              <EmptyState icon={<Camera className="h-6 w-6" />} title="No cameras yet" />
-            ) : (
+          <Card title="Cameras" description="Stream passwords and RTSP credentials stay on the server. Preview opens an audited session that ends when you leave or the session expires.">
+            {!data.cameras.length ? <EmptyState icon={<Camera className="h-6 w-6" />} title="No cameras yet" /> : (
+              <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2">
+                {data.cameras.map((camera) => (
+                  <div key={camera.id} className="rounded-xl border border-ink-700 p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-medium">{camera.cameraName}</p>
+                        <p className="text-xs text-ink-400">{[camera.location, camera.site].filter(Boolean).join(' · ')}</p>
+                        <p className="font-mono text-[11px] text-ink-500">{camera.id}</p>
+                      </div>
+                      <CameraStatusBadge status={camera.status} monitoring={camera.monitoringEnabled} />
+                    </div>
+                    <p className="mt-2 text-xs text-ink-400">Last heartbeat {fmtRelative(camera.lastConnectedAt)} · {camera.status === 'ONLINE' ? 'Connected' : camera.status === 'ERROR' ? 'Reconnecting' : 'Unavailable'}</p>
+                    {camera.lastError && <p className="mt-1 text-xs text-red-300">{camera.lastError}</p>}
+                    <Button className="mt-3" size="sm" variant="secondary" disabled={!ready || !data.admin} loading={opening === camera.id} onClick={() => void open(camera.id, { purpose: 'LIVE_PREVIEW', path: '/monitoring' })}>Authorized preview</Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Card title="Detection history" description="Rows past the retention cutoff are marked eligible. Legal holds and open investigations are kept.">
+            {!data.detections.length ? <EmptyState title="No detections stored" /> : (
               <div className="overflow-x-auto">
                 <table className="w-full">
-                  <thead className="border-b border-ink-700/70">
-                    <tr>
-                      <th className="table-head">Camera</th>
-                      <th className="table-head">Type</th>
-                      <th className="table-head">Status</th>
-                      <th className="table-head">Last connected</th>
-                      <th className="table-head text-right">Preview</th>
-                    </tr>
-                  </thead>
+                  <thead className="border-b border-ink-700/70"><tr><th className="table-head">When</th><th className="table-head">Camera</th><th className="table-head">Type</th><th className="table-head">Status</th></tr></thead>
                   <tbody className="divide-y divide-ink-800">
-                    {data.cameras.map((c) => (
-                      <tr key={c.id} className="align-top hover:bg-ink-800/40">
-                        <td className="table-cell">
-                          <p className="font-medium">{c.cameraName}</p>
-                          <p className="text-xs text-ink-400">{[c.location, c.site].filter(Boolean).join(' · ')}</p>
-                          {c.streamReference && <p className="max-w-[22rem] truncate font-mono text-[11px] text-ink-400" title={c.streamReference}>{c.streamReference}</p>}
-                        </td>
-                        <td className="table-cell text-xs text-ink-300">
-                          {c.cameraType}
-                          {c.hasCredentials && <Badge className="ml-1">Credentials stored</Badge>}
-                        </td>
-                        <td className="table-cell">
-                          <CameraStatusBadge status={c.status} monitoring={c.monitoringEnabled} />
-                          {c.lastError && <p className="mt-1 max-w-[14rem] text-xs text-red-300/80">{c.lastError}</p>}
-                        </td>
-                        <td className="table-cell text-xs text-ink-300" title={fmtDateTime(c.lastConnectedAt)}>
-                          {fmtRelative(c.lastConnectedAt)}
-                        </td>
-                        <td className="table-cell text-right">
-                          <Button size="sm" variant="secondary" icon={<MonitorPlay className="h-3.5 w-3.5" />} disabled={!ready || !data.admin} loading={opening === c.id} onClick={() => void open(c.id, { path: '/monitoring' })}>
-                            Preview
-                          </Button>
+                    {data.detections.map((event) => (
+                      <tr key={event.id}>
+                        <td className="table-cell text-xs">{fmtDateTime(event.eventTimestamp)}</td>
+                        <td className="table-cell text-xs">{event.camera?.name ?? '—'}</td>
+                        <td className="table-cell text-xs">{event.eventType}</td>
+                        <td className="table-cell text-xs">
+                          {event.reviewStatus}
+                          {event.legalHold && <Badge tone="amber" className="ml-1">Legal hold</Badge>}
+                          {event.eligibleForDeletion && <Badge className="ml-1">Eligible</Badge>}
                         </td>
                       </tr>
                     ))}
@@ -207,150 +207,95 @@ export default function ClientDetailPage() {
             )}
           </Card>
 
-          <Card title="Users" description="Console accounts in this organization's database">
+          <Card title="Users and access">
             <div className="overflow-x-auto">
               <table className="w-full">
-                <thead className="border-b border-ink-700/70">
-                  <tr>
-                    <th className="table-head">User</th>
-                    <th className="table-head">Role</th>
-                    <th className="table-head">Status</th>
-                    <th className="table-head">Last sign-in</th>
-                    <th className="table-head text-right">Access</th>
-                  </tr>
-                </thead>
+                <thead className="border-b border-ink-700/70"><tr><th className="table-head">User</th><th className="table-head">Role</th><th className="table-head">Status</th><th className="table-head text-right">Access</th></tr></thead>
                 <tbody className="divide-y divide-ink-800">
-                  {data.users.map((u) => (
-                    <tr key={u.id} className="hover:bg-ink-800/40">
-                      <td className="table-cell">
-                        <p className="font-medium">
-                          {u.name} {u.isPrimaryAdmin && <Badge tone="violet">Primary admin</Badge>}
-                        </p>
-                        <p className="text-xs text-ink-400">{u.email}</p>
-                      </td>
-                      <td className="table-cell text-xs text-ink-300">{ROLE_LABELS[u.role] ?? u.role}</td>
-                      <td className="table-cell">
-                        <Badge tone={u.status === 'ACTIVE' ? 'green' : 'neutral'}>{u.status === 'ACTIVE' ? 'Active' : 'Disabled'}</Badge>
-                        {u.lockedUntil && new Date(u.lockedUntil) > new Date() && (
-                          <Badge tone="amber" className="ml-1">
-                            Locked
-                          </Badge>
-                        )}
-                      </td>
-                      <td className="table-cell text-xs text-ink-300" title={fmtDateTime(u.lastLoginAt)}>
-                        {fmtRelative(u.lastLoginAt)}
-                      </td>
-                      <td className="table-cell text-right">
-                        <Button size="sm" variant="ghost" icon={<Eye className="h-3.5 w-3.5" />} disabled={!ready || u.status !== 'ACTIVE'} loading={opening === u.id} onClick={() => void open(u.id, { userId: u.id })}>
-                          View as
-                        </Button>
-                      </td>
+                  {data.users.map((user) => (
+                    <tr key={user.id}>
+                      <td className="table-cell"><p className="font-medium">{user.name} {user.isPrimaryAdmin && <Badge tone="violet">Primary admin</Badge>}</p><p className="text-xs text-ink-400">{user.email}</p></td>
+                      <td className="table-cell text-xs">{ROLE_LABELS[user.role] ?? user.role}</td>
+                      <td className="table-cell text-xs">{user.status}</td>
+                      <td className="table-cell text-right"><Button size="sm" variant="ghost" disabled={!ready || user.status !== 'ACTIVE'} loading={opening === user.id} onClick={() => void open(user.id, { userId: user.id })}>View as</Button></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           </Card>
-
-          <Card title="Recent sign-in activity" description="From the organization's own audit trail">
-            {!data.recentActivity.length ? (
-              <EmptyState icon={<History className="h-6 w-6" />} title="No sign-in activity yet" />
-            ) : (
-              <ul className="divide-y divide-ink-800">
-                {data.recentActivity.map((a) => (
-                  <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-5 py-2.5 text-sm">
-                    <span>
-                      <span className="font-medium text-ink-100">{humanize(a.action)}</span>
-                      <span className="text-ink-400"> · {a.userEmail ?? 'unknown user'}</span>
-                      {typeof a.metadata?.impersonatedBy === 'string' && <Badge tone="violet" className="ml-2">via {a.metadata.impersonatedBy}</Badge>}
-                    </span>
-                    <span className="text-xs text-ink-400" title={fmtDateTime(a.createdAt)}>
-                      {fmtRelative(a.createdAt)} {a.ipAddress && `· ${a.ipAddress}`}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
         </div>
 
         <div className="space-y-6">
-          <Card
-            title="Admin login"
-            actions={
-              <Button size="sm" variant="secondary" icon={<KeyRound className="h-3.5 w-3.5" />} disabled={!ready} onClick={() => setResetOpen(true)}>
-                Reset password
-              </Button>
-            }
-          >
-            <div className="space-y-3 p-5 text-sm">
-              {data.admin ? (
-                <>
-                  <div>
-                    <p className="label">Login ID</p>
-                    <span className="inline-flex items-center gap-1">
-                      {data.admin.email} <CopyButton value={data.admin.email} label="Copy login ID" />
-                    </span>
-                  </div>
-                  <div>
-                    <p className="label">Password</p>
-                    <PasswordReveal key={passwordVersion} organizationId={org.id} available={Boolean(data.credentials)} />
-                  </div>
-                  <p className="text-xs text-ink-400">
-                    Last sign-in {fmtRelative(data.admin.lastLoginAt)}
-                    {data.credentials && ` · password set by ${data.credentials.updatedBy ?? 'the admin'} ${fmtRelative(data.credentials.updatedAt)}`}
-                  </p>
-                </>
-              ) : (
-                <p className="text-ink-400">No admin account found.</p>
-              )}
+          <Card title="Overview">
+            <div className="p-5">
+              <KeyValue items={[
+                ['Plan', org.subscriptionPlan],
+                ['Database', org.databaseName],
+                ['Time zone', org.timezone],
+                ['Registered', fmtDateTime(org.createdAt)],
+                ['Contact', org.contactEmail],
+                ['Phone', org.contactPhone],
+                ['Held', org.heldAt ? fmtDateTime(org.heldAt) : null],
+              ]} />
             </div>
           </Card>
-
-          <Card title="Organization">
-            <div className="p-5">
-              <KeyValue
-                items={[
-                  ['Database', <span key="db" className="font-mono text-xs">{org.databaseName ?? 'primary (shared)'}</span>],
-                  ['Slug', org.slug],
-                  ['Contact', org.contactName],
-                  ['Contact email', org.contactEmail],
-                  ['Contact phone', org.contactPhone],
-                  ['Registered', fmtDateTime(org.createdAt)],
-                  ['History limit', org.detectionRetentionDays ? `${org.detectionRetentionDays} days` : 'None'],
-                  ['Oldest detection', fmtDateTime(stats?.oldestEventAt)],
-                ]}
-              />
+          <Card title="Administrator" actions={<Button size="sm" variant="secondary" icon={<KeyRound className="h-3.5 w-3.5" />} disabled={!ready} onClick={() => setResetOpen(true)}>Reset password</Button>}>
+            <div className="space-y-2 p-5 text-sm">
+              {data.admin ? (
+                <>
+                  <p className="inline-flex items-center gap-1">{data.admin.email}<CopyButton value={data.admin.email} /></p>
+                  <p className="text-xs text-ink-400">Last sign-in {fmtRelative(data.admin.lastLoginAt)}. Passwords are not stored for viewing.</p>
+                </>
+              ) : <p className="text-ink-400">No administrator yet.</p>}
             </div>
+          </Card>
+          <Card title="Storage and retention">
+            <div className="space-y-2 p-5 text-sm text-ink-300">
+              <p>Used {fmtBytes(data.storageUsedBytes)}{org.storageLimitBytes ? ` of ${fmtBytes(org.storageLimitBytes)}` : ''}</p>
+              <p>{org.detectionRetentionDays ?? '—'} day retention · {org.retentionGraceDays} day grace · {org.retentionMode === 'DRY_RUN' ? 'dry run' : 'enforced'}</p>
+              <p>Next cleanup {fmtDateTime(data.nextCleanupAt)}</p>
+              <p>Cutoff {fmtDateTime(data.retentionCutoff)}</p>
+              {data.cleanup ? (
+                <p className="text-xs text-ink-400">Last run {data.cleanup.mode}: processed {data.cleanup.processed}, deleted {data.cleanup.deleted}, failed {data.cleanup.failed}, remaining {data.cleanup.remaining}, holds skipped {data.cleanup.skippedHolds}.</p>
+              ) : <p className="text-xs text-ink-400">No cleanup has run yet.</p>}
+              <p className="text-xs text-ink-500">Backup copies follow the backup retention policy and are not erased by this job.</p>
+              {data.holds.filter((hold) => hold.active).map((hold) => (
+                <p key={hold.id} className="text-xs text-amber-200">{hold.holdType} hold: {hold.reason}</p>
+              ))}
+            </div>
+          </Card>
+          <Card title="Features">
+            <ul className="max-h-80 space-y-1 overflow-auto p-5 text-sm">
+              {(catalog ?? []).map((feature) => {
+                const on = org.features.includes(feature.key);
+                return <li key={feature.key} className={on ? 'text-ink-100' : 'text-ink-500'}>{on ? 'On' : 'Off'} · {feature.label}{!feature.supported ? ' (unavailable)' : ''}</li>;
+              })}
+            </ul>
           </Card>
         </div>
       </div>
 
-      {catalog && ready && (
-        <div className="mt-6">
-          <PlanEditor key={org.updatedAt} org={org} catalog={catalog} onSaved={setOrg} />
+      {catalog && plans && ready && (
+        <div className="mt-6" id="plan">
+          <PlanEditor key={org.updatedAt} org={org} catalog={catalog} plans={plans} onSaved={setOrg} />
         </div>
       )}
 
-      <ResetPasswordDialog
-        open={resetOpen}
-        org={org}
-        email={data.admin?.email ?? null}
-        onClose={() => setResetOpen(false)}
-        onDone={() => {
-          setPasswordVersion((v) => v + 1);
-          void reload();
-        }}
-      />
-      <HoldDialog
-        open={holdOpen}
-        org={org}
-        onClose={() => setHoldOpen(false)}
-        onDone={(o) => {
-          setOrg(o);
-          void reload();
-        }}
-      />
+      <Card title="Audit history" className="mt-6">
+        <ul className="divide-y divide-ink-800">
+          {data.recentActivity.map((entry) => (
+            <li key={entry.id} className="flex flex-wrap items-center justify-between gap-2 px-5 py-2.5 text-sm">
+              <span><span className="font-medium text-ink-100">{humanize(entry.action)}</span><span className="text-ink-400"> · {entry.userEmail ?? 'system'}</span></span>
+              <span className="text-xs text-ink-400">{fmtRelative(entry.createdAt)} {entry.ipAddress && `· ${entry.ipAddress}`}</span>
+            </li>
+          ))}
+          {!data.recentActivity.length && <li className="px-5 py-4 text-sm text-ink-400">No audit events yet.</li>}
+        </ul>
+      </Card>
+
+      <ResetPasswordDialog open={resetOpen} org={org} email={data.admin?.email ?? null} onClose={() => setResetOpen(false)} />
+      <AccountDialog open={accountOpen} org={org} onClose={() => setAccountOpen(false)} onDone={(next) => { setOrg(next); void reload(); }} />
     </>
   );
 }

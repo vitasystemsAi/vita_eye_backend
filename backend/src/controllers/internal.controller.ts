@@ -5,6 +5,7 @@ import { recordEvents } from '../services/detections.service';
 import { galleryVersion, loadGallery } from '../services/gallery.service';
 import { NETWORK_TYPES, setCameraStatus } from '../services/ingestion.service';
 import { emitToPreview, previewWatcherCount } from '../sockets/emitter';
+import { rememberPreview } from '../sockets/previewCache';
 import { forEachTenant, resolveTenant, runInTenant } from '../services/tenancy.service';
 import { AppError, parse } from '../utils/errors';
 import { ok } from '../utils/http';
@@ -112,6 +113,8 @@ export async function cameraPreview(req: Request, res: Response) {
   const jpeg = Buffer.from(body.imageJpegB64, 'base64');
   if (jpeg.length < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw AppError.badRequest('Preview is not a JPEG');
   const faces = (body.faces ?? []).map((f) => ({ ...f, personId: f.personId ?? null, personName: f.personName ?? null, similarity: f.similarity ?? null }));
-  emitToPreview(id, 'camera:preview', { cameraId: id, image: jpeg, faces, frameSize: body.frameSize }, { volatile: true });
+  const payload = { cameraId: id, image: jpeg, faces, frameSize: body.frameSize };
+  rememberPreview(id, payload);
+  emitToPreview(id, 'camera:preview', payload, { volatile: true });
   ok(res, { viewers });
 }

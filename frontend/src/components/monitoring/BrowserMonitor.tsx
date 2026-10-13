@@ -47,13 +47,54 @@ function FaceOverlay({ frameSize, faces, fit }: { frameSize: [number, number]; f
 }
 
 function jpegBlob(image: unknown): Blob | null {
+  if (image instanceof Blob) return image;
   if (image instanceof ArrayBuffer) return new Blob([image], { type: 'image/jpeg' });
   if (ArrayBuffer.isView(image)) {
-    const view = new Uint8Array(image.byteLength);
-    view.set(new Uint8Array(image.buffer, image.byteOffset, image.byteLength));
-    return new Blob([view], { type: 'image/jpeg' });
+    const copy = new Uint8Array(image.byteLength);
+    copy.set(new Uint8Array(image.buffer, image.byteOffset, image.byteLength));
+    return new Blob([copy], { type: 'image/jpeg' });
+  }
+  if (image && typeof image === 'object' && (image as { type?: unknown }).type === 'Buffer' && Array.isArray((image as { data?: unknown }).data)) {
+    return new Blob([new Uint8Array((image as { data: number[] }).data)], { type: 'image/jpeg' });
   }
   return null;
+}
+
+/** Paints the camera's real pixels. A raw <video> element can present a mirrored selfie; the canvas does not. */
+function useCameraCanvas(stream: MediaStream | null, active: boolean) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    video.srcObject = active ? stream : null;
+    if (!active || !stream) {
+      canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+    let raf = 0;
+    let stopped = false;
+    const paint = () => {
+      if (stopped) return;
+      if (video.videoWidth > 0) {
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
+        canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      }
+      raf = requestAnimationFrame(paint);
+    };
+    void video.play().then(() => {
+      if (!stopped) paint();
+    }).catch(() => undefined);
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [stream, active]);
+  return { videoRef, canvasRef };
 }
 
 interface PreviewFrame {
@@ -69,12 +110,15 @@ export function RemotePreview({
   fill = false,
   embedded = false,
   bare = false,
+  passthrough = false,
 }: {
   cameras: Camera[];
   fill?: boolean;
   embedded?: boolean;
   /** Fill the parent and leave the name to the surrounding tile. */
   bare?: boolean;
+  /** Stay transparent until the first shared frame, so a local picture can show underneath. */
+  passthrough?: boolean;
 }) {
   const { socket } = useSocket();
   const live = cameras.filter((c) => c.monitoringEnabled);
@@ -139,10 +183,10 @@ export function RemotePreview({
       if (!alive || payload.cameraId !== cameraId || payload.monitoring) return;
       clearFrame();
     };
-    watch();
-    socket.on('connect', watch);
     socket.on('camera:preview', onFrame);
     socket.on('camera:preview:status', onStatus);
+    socket.on('connect', watch);
+    watch();
     return () => {
       alive = false;
       socket.off('connect', watch);
@@ -159,16 +203,17 @@ export function RemotePreview({
 
   if (!camera) return <div className="absolute inset-0 bg-black" />;
 
+  const waiting = !hasFrame;
   return (
-    <div className={fill || bare ? 'absolute inset-0 bg-black' : 'relative aspect-video w-full overflow-hidden bg-black'}>
-      <canvas ref={canvasRef} className={`absolute inset-0 h-full w-full object-contain ${hasFrame ? '' : 'hidden'}`} />
+    <div className={fill || bare ? `absolute inset-0 ${waiting && passthrough ? 'pointer-events-none' : 'bg-black'}` : 'relative aspect-video w-full overflow-hidden bg-black'}>
+      <canvas ref={canvasRef} className={`absolute inset-0 h-full w-full object-contain ${waiting ? 'invisible' : ''}`} />
       {hasFrame && frameSize && <FaceOverlay frameSize={frameSize} faces={faces} fit="contain" />}
       {hasFrame && !bare && (
         <span className="absolute top-4 left-4 z-10 inline-flex items-center gap-1.5 rounded-full bg-red-600/90 px-3 py-1.5 text-sm font-semibold text-white">
           <span className="h-2 w-2 animate-pulse rounded-full bg-white" /> LIVE · {camera.cameraName}
         </span>
       )}
-      {!hasFrame && (
+      {waiting && !passthrough && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
           <CameraIcon className={embedded || bare ? 'h-8 w-8 text-ink-500' : 'h-12 w-12 text-ink-400'} />
           {!embedded && !bare && <p className="text-lg font-medium text-ink-100">{camera.cameraName}</p>}
@@ -208,20 +253,14 @@ export function RemotePreview({
 export function BrowserStage({ camera }: { camera: Camera }) {
   const monitor = useMonitor();
   const { session, status, stream, faces, frameSize } = monitor;
-  const videoRef = useRef<HTMLVideoElement>(null);
   const mine = session?.cameraId === camera.id;
   const showVideo = mine && Boolean(stream) && status !== 'other-tab';
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.srcObject = mine ? stream : null;
-    if (mine && stream) void video.play().catch(() => undefined);
-  }, [mine, stream]);
+  const { videoRef, canvasRef } = useCameraCanvas(stream, showVideo);
 
   return (
     <div className="absolute inset-0 bg-black">
-      <video ref={videoRef} playsInline muted className={`absolute inset-0 h-full w-full object-contain ${showVideo ? '' : 'hidden'}`} />
+      <video ref={videoRef} playsInline muted className="pointer-events-none absolute h-px w-px opacity-0" />
+      <canvas ref={canvasRef} className={`absolute inset-0 h-full w-full object-contain ${showVideo ? '' : 'invisible'}`} />
       {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={faces} fit="contain" />}
       {!showVideo && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center text-ink-500">
@@ -273,9 +312,9 @@ export function BrowserMonitor({
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState('');
   const [startError, setStartError] = useState<string | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-
   const active = Boolean(session);
+  const showVideo = active && Boolean(stream) && status !== 'other-tab';
+  const { videoRef, canvasRef } = useCameraCanvas(stream, showVideo);
   const selectedId = session?.cameraId ?? cameraId;
   const camera = browserCams.find((c) => c.id === selectedId) ?? null;
 
@@ -289,13 +328,6 @@ export function BrowserMonitor({
     setDevices(list);
   }, []);
   useEffect(() => void refreshDevices(), [refreshDevices, stream]);
-
-  useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    v.srcObject = stream;
-    if (stream) void v.play().catch(() => undefined);
-  }, [stream]);
 
   async function start() {
     if (!camera) return;
@@ -339,7 +371,6 @@ export function BrowserMonitor({
     );
   }
 
-  const showVideo = active && Boolean(stream) && status !== 'other-tab';
   const pill = PILL[status];
   const problem = active ? monitor.error : (startError ?? monitor.notice);
   const waitingText = status === 'other-tab' ? 'Monitoring is running in another tab on this device' : active ? 'Waiting for the camera…' : 'Camera preview appears here';
@@ -383,7 +414,8 @@ export function BrowserMonitor({
       </div>
 
       <div className="relative overflow-hidden rounded-xl border border-ink-700 bg-black">
-        <video ref={videoRef} playsInline muted className={`block h-auto w-full ${showVideo ? '' : 'hidden'}`} />
+        <video ref={videoRef} playsInline muted className="pointer-events-none absolute h-px w-px opacity-0" />
+        <canvas ref={canvasRef} className={`block h-auto max-h-[70vh] w-full object-contain ${showVideo ? '' : 'hidden'}`} />
         {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={faces} fit="stretch" />}
         {!showVideo && (
           <div className="flex aspect-video flex-col items-center justify-center gap-2 text-center text-ink-400">

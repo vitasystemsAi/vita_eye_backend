@@ -5,7 +5,7 @@ import { hashPassword } from '../utils/password';
 import { pageMeta } from '../utils/http';
 import { canAssignRole, type RoleName } from '../config/rbac';
 import { audit } from './audit.service';
-import { syncClientPassword } from './clientCredentials.service';
+import { forgetClientPassword } from './clientCredentials.service';
 import { roleByName } from './rbac.service';
 import { isEmailTaken, registerDirectoryEntry } from './tenancy.service';
 import type { AuthContext } from '../types/auth';
@@ -117,7 +117,7 @@ export async function updateUser(
     if (changes.status === 'DISABLED' || changes.passwordHash || changes.roleId) {
       await RefreshToken.update({ revokedAt: new Date() }, { where: { userId: id, revokedAt: null }, transaction });
     }
-    if (input.password) await syncClientPassword(id, input.password, ctx.email, transaction);
+    if (input.password) await forgetClientPassword(id, transaction);
     await audit(
       {
         organizationId: ctx.organizationId,

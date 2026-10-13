@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
 
 export default function PlatformHome() {
-  redirect('/platform/clients');
+  redirect('/platform/dashboard');
 }

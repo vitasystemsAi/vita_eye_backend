@@ -1,68 +1,82 @@
 'use client';
 
-import { Building2, Database, Eye, EyeOff, PlusCircle, Sparkles } from 'lucide-react';
+import { Building2, Database, PlusCircle, Sparkles } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { CredentialsSummary, FeatureChecklist, RetentionPicker } from '@/components/platform/ClientControls';
-import { Button, Card, ErrorBanner, Field, Input, LoadingBlock, Modal, PageHeader } from '@/components/ui/primitives';
+import { useEffect, useMemo, useState } from 'react';
+import { FeatureChecklist, RetentionPicker, SetupSummary, planByCode } from '@/components/platform/ClientControls';
+import { Button, Card, ErrorBanner, Field, Input, LoadingBlock, Modal, PageHeader, Select } from '@/components/ui/primitives';
 import { api, ApiError, errorMessage } from '@/lib/api';
 import { useApi } from '@/lib/hooks';
-import type { FeatureInfo, PlatformOrganization } from '@/lib/platform';
+import type { FeatureInfo, PlanInfo, PlatformOrganization, SetupLink } from '@/lib/platform';
 import type { FeatureKey } from '@/lib/types';
 
 interface RegisterResult {
   organization: PlatformOrganization;
-  admin: { id: string; name: string; email: string; password: string; generated: boolean };
+  admin: { id: string; name: string; email: string };
+  setup: SetupLink;
 }
 
-const EMPTY = { name: '', contactName: '', contactEmail: '', contactPhone: '', adminName: '', adminEmail: '', adminPassword: '' };
-const PASSWORD_RE = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{12,128}$/;
+const ZONES = ['UTC', 'Asia/Kolkata', 'Asia/Dubai', 'Asia/Singapore', 'Europe/London', 'America/New_York'];
 
 export default function RegisterOrganizationPage() {
   const router = useRouter();
-  const { data: catalog, loading, error, reload } = useApi<FeatureInfo[]>('/platform/features');
-  const [form, setForm] = useState(EMPTY);
+  const featuresQuery = useApi<FeatureInfo[]>('/platform/features');
+  const plansQuery = useApi<PlanInfo[]>('/platform/plans');
+  const catalog = featuresQuery.data;
+  const plans = plansQuery.data;
+  const [name, setName] = useState('');
+  const [code, setCode] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [timezone, setTimezone] = useState('UTC');
+  const [plan, setPlan] = useState('PROFESSIONAL');
   const [features, setFeatures] = useState<FeatureKey[]>([]);
   const [retention, setRetention] = useState(30);
-  const [showPassword, setShowPassword] = useState(false);
+  const [grace, setGrace] = useState(0);
+  const [mode, setMode] = useState<'DRY_RUN' | 'ENFORCE'>('DRY_RUN');
+  const [cameraLimit, setCameraLimit] = useState('');
+  const [storageGb, setStorageGb] = useState('');
+  const [adminName, setAdminName] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<RegisterResult | null>(null);
 
+  const selected = useMemo(() => planByCode(plans, plan), [plans, plan]);
+  const allowed = selected?.features;
+
   useEffect(() => {
-    if (catalog) setFeatures(catalog.map((f) => f.key));
-  }, [catalog]);
+    if (allowed) setFeatures(allowed);
+    if (selected) {
+      setRetention(Math.min(30, selected.retentionMaxDays));
+      setCameraLimit(selected.cameraLimit ? String(selected.cameraLimit) : '');
+      setStorageGb(selected.storageLimitBytes ? String(Math.round(selected.storageLimitBytes / 1024 ** 3)) : '');
+    }
+  }, [allowed, selected]);
 
-  const set = (k: keyof typeof EMPTY) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
-
-  function validate() {
-    const e: Record<string, string> = {};
-    if (form.name.trim().length < 2) e.name = 'Organization name is required';
-    if (form.contactEmail && !/^\S+@\S+\.\S+$/.test(form.contactEmail)) e.contactEmail = 'Enter a valid email';
-    if (form.adminName.trim().length < 2) e['admin.name'] = 'Admin name is required';
-    if (!/^\S+@\S+\.\S+$/.test(form.adminEmail)) e['admin.email'] = 'Enter a valid email';
-    if (form.adminPassword && !PASSWORD_RE.test(form.adminPassword)) e['admin.password'] = '12+ characters with upper-case, lower-case and a digit';
-    if (!Number.isInteger(retention) || retention < 1 || retention > 3650) e.detectionRetentionDays = 'Between 1 and 3650 days';
-    setErrors(e);
-    return Object.keys(e).length === 0;
-  }
-
-  async function submit(ev: React.FormEvent) {
-    ev.preventDefault();
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
     setSubmitError(null);
-    if (!validate()) return;
     setSubmitting(true);
     try {
       const { data } = await api.post<RegisterResult>('/platform/organizations', {
-        name: form.name,
-        contactName: form.contactName,
-        contactEmail: form.contactEmail,
-        contactPhone: form.contactPhone,
+        name,
+        code,
+        contactName,
+        contactEmail,
+        contactPhone,
+        timezone,
+        subscriptionPlan: plan,
         features,
         detectionRetentionDays: retention,
-        admin: { name: form.adminName, email: form.adminEmail, password: form.adminPassword },
+        retentionGraceDays: grace,
+        retentionMode: mode,
+        cameraLimit: cameraLimit ? Number(cameraLimit) : null,
+        storageLimitBytes: storageGb ? Math.round(Number(storageGb) * 1024 ** 3) : null,
+        admin: { name: adminName, email: adminEmail },
       });
       setResult(data);
     } catch (err) {
@@ -73,117 +87,85 @@ export default function RegisterOrganizationPage() {
     }
   }
 
-  if (loading && !catalog) return <LoadingBlock />;
-  if (!catalog) return <ErrorBanner error={error} onRetry={reload} />;
+  if ((featuresQuery.loading && !catalog) || (plansQuery.loading && !plans)) return <LoadingBlock />;
+  if (!catalog || !plans) return <ErrorBanner error={featuresQuery.error ?? plansQuery.error} onRetry={() => { void featuresQuery.reload(); void plansQuery.reload(); }} />;
 
   return (
     <>
-      <PageHeader
-        title="Register organization"
-        icon={<PlusCircle className="h-5 w-5" />}
-        description="Creates the organization, its dedicated database and its first super admin account."
-      />
+      <PageHeader title="Register organization" icon={<PlusCircle className="h-5 w-5" />} description="Creates the organization record, provisions its database, and emails a one-time administrator setup link." />
       <form onSubmit={submit} className="grid grid-cols-1 gap-6 xl:grid-cols-3" noValidate>
         <div className="space-y-6 xl:col-span-2">
-          <Card title="Organization" description="Company details and primary contact">
+          <Card title="Organization">
             <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
-              <div className="md:col-span-2">
-                <Field label="Organization name" error={errors.name}>
-                  <Input value={form.name} onChange={set('name')} placeholder="Acme Security Pvt Ltd" maxLength={160} />
-                </Field>
-              </div>
-              <Field label="Contact person" error={errors.contactName}>
-                <Input value={form.contactName} onChange={set('contactName')} maxLength={120} />
-              </Field>
-              <Field label="Contact email" error={errors.contactEmail}>
-                <Input type="email" value={form.contactEmail} onChange={set('contactEmail')} maxLength={255} />
-              </Field>
-              <Field label="Contact phone" error={errors.contactPhone}>
-                <Input value={form.contactPhone} onChange={set('contactPhone')} maxLength={40} />
+              <Field label="Organization name" error={errors.name}><Input value={name} onChange={(e) => setName(e.target.value)} maxLength={160} /></Field>
+              <Field label="Organization code" error={errors.code} hint="Unique, used in reports. Example: acme"><Input value={code} onChange={(e) => setCode(e.target.value)} maxLength={32} /></Field>
+              <Field label="Organization email" error={errors.contactEmail}><Input type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} /></Field>
+              <Field label="Contact number" error={errors.contactPhone}><Input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} /></Field>
+              <Field label="Contact name" error={errors.contactName}><Input value={contactName} onChange={(e) => setContactName(e.target.value)} /></Field>
+              <Field label="Time zone" error={errors.timezone}>
+                <Select value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+                  {ZONES.map((zone) => <option key={zone} value={zone}>{zone}</option>)}
+                </Select>
               </Field>
             </div>
           </Card>
-
-          <Card title="Features" description="Only checked features are available to this organization. Disabled features are blocked by the API, not just hidden.">
-            <div className="p-5">
-              <FeatureChecklist catalog={catalog} value={features} onChange={setFeatures} />
+          <Card title="Subscription">
+            <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
+              <Field label="Plan" error={errors.subscriptionPlan}>
+                <Select value={plan} onChange={(e) => setPlan(e.target.value)}>
+                  {plans.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+                </Select>
+              </Field>
+              <Field label="Camera limit" hint="Leave blank to use the plan limit"><Input type="number" min={1} value={cameraLimit} onChange={(e) => setCameraLimit(e.target.value)} /></Field>
+              <Field label="Storage limit (GB)" hint="Evidence files. Leave blank for the plan limit"><Input type="number" min={1} value={storageGb} onChange={(e) => setStorageGb(e.target.value)} /></Field>
             </div>
           </Card>
-
-          <Card title="Detection history storage" description="How long detection events and evidence are kept before automatic deletion.">
+          <Card title="Features" description="Disabled features are blocked by the API. Features this deployment does not support stay off.">
             <div className="p-5">
-              <RetentionPicker value={retention} onChange={setRetention} error={errors.detectionRetentionDays} />
+              <FeatureChecklist catalog={catalog} value={features} onChange={setFeatures} allowed={allowed} />
+            </div>
+          </Card>
+          <Card title="Data retention" description="The current local day stays available. Eligible records are removed by the hourly cleanup, unless a legal hold pauses it.">
+            <div className="space-y-4 p-5">
+              <RetentionPicker value={retention} onChange={setRetention} max={selected?.retentionMaxDays} error={errors.detectionRetentionDays} />
+              <Field label="Grace period (days)" hint="Extra days after the retention window before permanent deletion">
+                <Input type="number" min={0} max={365} value={grace} onChange={(e) => setGrace(Number(e.target.value))} className="max-w-[10rem]" />
+              </Field>
+              <Field label="Cleanup mode">
+                <Select value={mode} onChange={(e) => setMode(e.target.value as 'DRY_RUN' | 'ENFORCE')}>
+                  <option value="DRY_RUN">Dry run — report what would be deleted</option>
+                  <option value="ENFORCE">Enforce — permanently delete eligible records</option>
+                </Select>
+              </Field>
+              <p className="text-xs text-ink-400">Backups expire on their own schedule. This cleanup does not promise that backup copies disappear immediately.</p>
             </div>
           </Card>
         </div>
-
         <div className="space-y-6">
-          <Card title="Admin account" description="The organization's first Super Admin. This is the login shown in the Clients tab.">
+          <Card title="Administrator" description="The first Super Admin. They set their own password from a one-time link.">
             <div className="space-y-4 p-5">
-              <Field label="Full name" error={errors['admin.name']}>
-                <Input value={form.adminName} onChange={set('adminName')} maxLength={120} />
-              </Field>
-              <Field label="Login email (ID)" error={errors['admin.email']}>
-                <Input type="email" autoComplete="off" value={form.adminEmail} onChange={set('adminEmail')} maxLength={255} />
-              </Field>
-              <Field label="Password" error={errors['admin.password']} hint="Leave blank to generate a strong password">
-                <div className="relative">
-                  <Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={form.adminPassword} onChange={set('adminPassword')} className="pr-10" />
-                  <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute top-2 right-2 rounded p-1 text-ink-400 hover:text-ink-100" aria-label={showPassword ? 'Hide password' : 'Show password'}>
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </Field>
+              <Field label="Administrator name" error={errors['admin.name']}><Input value={adminName} onChange={(e) => setAdminName(e.target.value)} /></Field>
+              <Field label="Administrator email" error={errors['admin.email']}><Input type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} /></Field>
             </div>
           </Card>
-
           <Card>
             <div className="space-y-4 p-5 text-sm text-ink-300">
-              <p className="flex items-start gap-2">
-                <Database className="mt-0.5 h-4 w-4 shrink-0 text-brand-400" />
-                A new MySQL database is created for this organization and its schema is migrated. Its cameras, faces, events and users never share tables with other clients.
-              </p>
+              <p className="flex items-start gap-2"><Database className="mt-0.5 h-4 w-4 shrink-0 text-brand-400" />A dedicated MySQL database is created and migrated. The organization stays inactive until that succeeds. A failure can be retried without creating a second organization.</p>
               {submitError && <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-200">{submitError}</p>}
-              <Button type="submit" className="w-full" loading={submitting} icon={<Sparkles className="h-4 w-4" />}>
-                {submitting ? 'Creating database…' : 'Register & provision'}
-              </Button>
+              <Button type="submit" className="w-full" loading={submitting} icon={<Sparkles className="h-4 w-4" />}>{submitting ? 'Creating database…' : 'Register and provision'}</Button>
             </div>
           </Card>
         </div>
       </form>
-
       <Modal
         open={Boolean(result)}
         onClose={() => router.push(`/platform/clients/${result?.organization.id}`)}
         title="Organization registered"
-        size="sm"
         footer={
-          <>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setResult(null);
-                setForm(EMPTY);
-                setFeatures(catalog.map((f) => f.key));
-                setRetention(30);
-              }}
-            >
-              Register another
-            </Button>
-            <Link href={`/platform/clients/${result?.organization.id}`}>
-              <Button icon={<Building2 className="h-4 w-4" />}>Open client</Button>
-            </Link>
-          </>
+          <Link href={`/platform/clients/${result?.organization.id}`}><Button icon={<Building2 className="h-4 w-4" />}>Open client</Button></Link>
         }
       >
-        {result && (
-          <div className="space-y-3 text-sm text-ink-300">
-            <p>
-              <strong className="text-ink-100">{result.organization.name}</strong> is active. Share these credentials with the client securely; you can view or reset them later in the Clients tab.
-            </p>
-            <CredentialsSummary email={result.admin.email} password={result.admin.password} extra={[['Database', result.organization.databaseName ?? '—']]} />
-          </div>
-        )}
+        {result && <SetupSummary setup={result.setup} />}
       </Modal>
     </>
   );

@@ -15,22 +15,43 @@ export interface FeatureInfo {
   key: FeatureKey;
   label: string;
   description: string;
+  category: string;
+  supported: boolean;
+  legalNote: string | null;
+}
+
+export interface PlanInfo {
+  code: string;
+  label: string;
+  description: string;
+  cameraLimit: number | null;
+  storageLimitBytes: number | null;
+  retentionMaxDays: number;
+  features: FeatureKey[];
 }
 
 export interface PlatformOrganization {
   id: string;
   name: string;
+  code: string | null;
   slug: string | null;
   status: OrganizationStatus;
   databaseName: string | null;
   dedicatedDatabase: boolean;
   features: FeatureKey[];
   detectionRetentionDays: number | null;
+  retentionGraceDays: number;
+  retentionMode: 'DRY_RUN' | 'ENFORCE';
+  timezone: string;
+  subscriptionPlan: string | null;
+  cameraLimit: number | null;
+  storageLimitBytes: number | null;
   contactName: string | null;
   contactEmail: string | null;
   contactPhone: string | null;
   holdReason: string | null;
   heldAt: string | null;
+  provisioningError: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -46,8 +67,10 @@ export interface ClientAdmin {
 
 export interface ClientRow extends PlatformOrganization {
   admin: ClientAdmin | null;
-  hasStoredPassword: boolean;
-  counts: { users: number; cameras: number; camerasOnline: number; persons: number } | null;
+  counts: { users: number; cameras: number; camerasOnline: number; camerasOffline: number; persons: number; events: number } | null;
+  storageUsedBytes: number | null;
+  approachingLimit: boolean;
+  activeHold: boolean;
 }
 
 export interface ClientUser {
@@ -72,20 +95,27 @@ export interface ClientDetail {
     users: number;
     cameras: number;
     camerasOnline: number;
+    camerasOffline?: number;
     persons: number;
     eventsTotal: number;
     events24h: number;
     unknown24h: number;
-    oldestEventAt: string | null;
-    newestEventAt: string | null;
   } | null;
+  detections: Array<{ id: string; eventType: string; reviewStatus: string; eventTimestamp: string; legalHold: boolean; eligibleForDeletion: boolean; camera: { id: string; name: string; location: string } | null }>;
+  holds: Array<{ id: string; holdType: 'LEGAL' | 'INVESTIGATION'; reason: string; active: boolean; createdAt: string; releasedAt: string | null }>;
+  provisioningJobs: Array<{ id: string; status: string; attempt: number; error: string | null; startedAt: string; finishedAt: string | null }>;
+  cleanup: { mode: string; cutoffAt: string | null; processed: number; deleted: number; failed: number; remaining: number; skippedHolds: number; error: string | null; finishedAt: string } | null;
+  nextCleanupAt: string;
+  retentionCutoff: string | null;
+  storageUsedBytes: number | null;
   recentActivity: Array<{ id: number; action: string; userEmail: string | null; ipAddress: string | null; metadata: Record<string, unknown> | null; createdAt: string }>;
 }
 
-export interface Credentials {
+export interface SetupLink {
   email: string;
-  password: string;
-  generated?: boolean;
+  emailed: boolean;
+  expiresAt: string;
+  setupLink: string | null;
 }
 
 interface PlatformState {
@@ -105,14 +135,14 @@ export function PlatformAuthProvider({ children }: { children: ReactNode }) {
     api
       .get<{ admin: PlatformAdmin }>('/platform/auth/me')
       .then(({ data }) => setAdmin(data.admin))
-      .catch(() => router.replace('/platform/login'))
+      .catch(() => router.replace('/login'))
       .finally(() => setLoading(false));
   }, [router]);
 
   useEffect(() => {
     const onExpired = () => {
       setAdmin(null);
-      router.replace('/platform/login');
+      router.replace('/login');
     };
     window.addEventListener(PLATFORM_SESSION_EXPIRED_EVENT, onExpired);
     return () => window.removeEventListener(PLATFORM_SESSION_EXPIRED_EVENT, onExpired);
@@ -123,7 +153,7 @@ export function PlatformAuthProvider({ children }: { children: ReactNode }) {
       await api.post('/platform/auth/logout', {}, { noRefresh: true });
     } finally {
       setAdmin(null);
-      router.replace('/platform/login');
+      router.replace('/login');
     }
   }, [router]);
 
@@ -141,10 +171,13 @@ export function usePlatform(): PlatformState {
  * Opens the client's console in a new tab as one of its users. The tab is opened synchronously (before
  * the request) so popup blockers allow it; the session cookies are set by the impersonate call.
  */
-export async function openClientConsole(organizationId: string, opts: { userId?: string; path?: string } = {}) {
+export async function openClientConsole(organizationId: string, opts: { userId?: string; path?: string; purpose?: 'CONSOLE' | 'LIVE_PREVIEW' } = {}) {
   const tab = window.open('about:blank', '_blank');
   try {
-    await api.post(`/platform/organizations/${organizationId}/impersonate`, opts.userId ? { userId: opts.userId } : {});
+    await api.post(`/platform/organizations/${organizationId}/impersonate`, {
+      ...(opts.userId ? { userId: opts.userId } : {}),
+      ...(opts.purpose ? { purpose: opts.purpose } : {}),
+    });
     const target = opts.path ?? '/dashboard';
     if (tab) tab.location.href = target;
     else window.location.href = target;

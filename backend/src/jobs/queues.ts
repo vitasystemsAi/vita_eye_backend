@@ -41,7 +41,7 @@ export async function enqueueNotification(notificationId: string) {
 export async function scheduleMaintenance() {
   const q = getMaintenanceQueue();
   await q.upsertJobScheduler('camera-health', { every: 30_000 }, { name: 'camera-health' });
-  // Hourly, so a day of detection history disappears soon after it passes the retention limit.
+  // Minute 15 of every hour (UTC). Each organization uses its own time zone and retention cutoff.
   await q.upsertJobScheduler('retention', { pattern: '15 * * * *' }, { name: 'retention' });
 }
 

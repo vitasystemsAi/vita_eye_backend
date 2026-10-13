@@ -23,6 +23,7 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
   const [camError, setCamError] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const imagesRef = useRef(images);
   imagesRef.current = images;
 
@@ -36,7 +37,31 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
   useEffect(() => () => stopCamera(), [stopCamera]);
   useEffect(() => () => imagesRef.current.forEach((i) => URL.revokeObjectURL(i.url)), []);
   useEffect(() => {
-    if (videoRef.current && stream) videoRef.current.srcObject = stream;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    video.srcObject = stream;
+    if (!stream) return;
+    let raf = 0;
+    let stopped = false;
+    const paint = () => {
+      if (stopped) return;
+      if (video.videoWidth > 0) {
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
+        canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      }
+      raf = requestAnimationFrame(paint);
+    };
+    void video.play().then(() => {
+      if (!stopped) paint();
+    }).catch(() => undefined);
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+    };
   }, [stream]);
   useEffect(() => {
     if (mode !== 'camera') stopCamera();
@@ -65,12 +90,8 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
   }
 
   function capture() {
-    const video = videoRef.current;
-    if (!video || !video.videoWidth) return;
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext('2d')!.drawImage(video, 0, 0);
+    const canvas = canvasRef.current;
+    if (!canvas || !canvas.width) return;
     canvas.toBlob((blob) => blob && void add(new File([blob], `capture-${Date.now()}.jpg`, { type: 'image/jpeg' }), 'camera'), 'image/jpeg', 0.92);
   }
 
@@ -117,7 +138,8 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
           <div className="relative aspect-video overflow-hidden rounded-xl border border-ink-700 bg-ink-950">
             {stream ? (
               <>
-                <video ref={videoRef} autoPlay playsInline muted className="h-full w-full -scale-x-100 object-cover" />
+                <video ref={videoRef} playsInline muted className="pointer-events-none absolute h-px w-px opacity-0" />
+                <canvas ref={canvasRef} className="h-full w-full object-contain" />
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="h-[70%] aspect-[3/4] rounded-[45%] border-2 border-dashed border-brand-400/70" />
                 </div>

@@ -4,6 +4,7 @@ import { logger } from '../config/logger';
 import { Camera, RegisteredPerson } from '../models';
 import type { CameraStatus } from '../models/Camera';
 import { emitToOrg, emitToPreview, previewWatcherCount } from '../sockets/emitter';
+import { rememberPreview } from '../sockets/previewCache';
 import { cipher, credentialsAad } from '../utils/cipher';
 import { AppError } from '../utils/errors';
 import { assertCameraUrlAllowed, parseCidrs, withCredentials } from '../utils/network';
@@ -14,6 +15,7 @@ import { galleryVersion } from './gallery.service';
 import { cameraInScope } from './scope';
 import { getSettings, onSettingsChanged } from './settings.service';
 import { forEachTenant } from './tenancy.service';
+import { streamsAllowed } from '../utils/accountPolicy';
 import type { AuthContext } from '../types/auth';
 
 const cidrs = parseCidrs(env.CAMERA_ALLOWED_NETWORKS);
@@ -89,7 +91,6 @@ export interface FrameAck {
 
 /** Forwards the JPEG already captured to Live Preview viewers. The last identities stay on later frames. */
 function relayPreview(cameraId: string, jpeg: Buffer, annotated?: Pick<FrameAck, 'faces' | 'frameSize'>) {
-  if (previewWatcherCount(cameraId) === 0) return;
   const now = Date.now();
   let faces = annotated?.faces;
   let frameSize = annotated?.frameSize;
@@ -103,7 +104,10 @@ function relayPreview(cameraId: string, jpeg: Buffer, annotated?: Pick<FrameAck,
   }
   if (!annotated && now - (lastPreviewAt.get(cameraId) ?? 0) < PREVIEW_INTERVAL_MS) return;
   lastPreviewAt.set(cameraId, now);
-  emitToPreview(cameraId, 'camera:preview', { cameraId, image: jpeg, faces, frameSize }, { volatile: true });
+  const payload = { cameraId, image: jpeg, faces, frameSize };
+  rememberPreview(cameraId, payload);
+  if (previewWatcherCount(cameraId) === 0) return;
+  emitToPreview(cameraId, 'camera:preview', payload, { volatile: true });
 }
 
 /**
@@ -184,7 +188,7 @@ export async function reconcileCameras() {
     (streams ??= listStreams()
       .then((r) => new Map(r.streams.map((s) => [s.cameraId, s.status])))
       .catch(() => null));
-  await forEachTenant((tenant) => reconcileTenantCameras(running, tenant.status === 'ACTIVE'), { statuses: ['ACTIVE', 'SUSPENDED'] });
+  await forEachTenant((tenant) => reconcileTenantCameras(running, streamsAllowed(tenant.status)), { statuses: ['ACTIVE', 'SUSPENDED', 'ON_HOLD', 'DEACTIVATED', 'ARCHIVED'] });
 }
 
 /** Stops every running network stream of the current tenant (organization put on hold). */

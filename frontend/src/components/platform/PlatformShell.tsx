@@ -1,6 +1,6 @@
 'use client';
 
-import { Building2, LogOut, Menu, PlusCircle, ScrollText, ShieldCheck, X } from 'lucide-react';
+import { Building2, LayoutDashboard, LogOut, Menu, PlusCircle, ScrollText, ShieldCheck, X } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState, type ReactNode } from 'react';
@@ -10,6 +10,7 @@ import { LoadingBlock } from '@/components/ui/primitives';
 import { usePlatform } from '@/lib/platform';
 
 const NAV = [
+  { href: '/platform/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/platform/clients', label: 'Clients', icon: Building2 },
   { href: '/platform/organizations/new', label: 'Register organization', icon: PlusCircle },
   { href: '/platform/audit', label: 'Platform audit', icon: ScrollText },
@@ -27,7 +28,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       </div>
       <ul className="flex-1 space-y-0.5 px-3 pb-6">
         {NAV.map((item) => {
-          const active = pathname === item.href || (item.href === '/platform/clients' && pathname.startsWith('/platform/clients/'));
+          const active = pathname === item.href || (item.href !== '/platform/dashboard' && pathname.startsWith(item.href));
           const Icon = item.icon;
           return (
             <li key={item.href}>
