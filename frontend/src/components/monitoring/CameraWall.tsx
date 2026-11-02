@@ -7,9 +7,9 @@ import { cn } from '@/components/ui/cn';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage } from '@/lib/api';
 import { useMonitor } from '@/lib/monitor';
-import type { Camera, CameraType } from '@/lib/types';
+import { isLocalCamera, type Camera, type CameraType } from '@/lib/types';
 
-const TYPE_LABEL: Record<CameraType, string> = { BROWSER: 'Browser', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
+const TYPE_LABEL: Record<CameraType, string> = { BROWSER: 'Browser', USB: 'USB', LAN: 'LAN', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
 const PREFS_KEY = 'vita.monitor.wall';
 
 type Mode = 'wall' | 'single';
@@ -58,12 +58,12 @@ function IconButton({ title, onClick, children }: { title: string; onClick: () =
 
 function Picture({ camera }: { camera: Camera }) {
   const { session, status } = useMonitor();
-  const localBrowser = camera.cameraType === 'BROWSER' && session?.cameraId === camera.id && status !== 'other-tab';
+  const localHere = isLocalCamera(camera.cameraType) && session?.cameraId === camera.id && status !== 'other-tab';
   if (camera.monitoringEnabled) {
-    if (localBrowser) return <BrowserStage camera={camera} />;
+    if (localHere) return <BrowserStage camera={camera} mirror={camera.cameraType === 'BROWSER'} />;
     return <RemotePreview cameras={[camera]} bare />;
   }
-  if (camera.cameraType === 'BROWSER') return <BrowserStage camera={camera} />;
+  if (isLocalCamera(camera.cameraType)) return <BrowserStage camera={camera} mirror={camera.cameraType === 'BROWSER'} />;
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-black text-ink-500">
       <CameraIcon className="h-8 w-8" />
@@ -195,16 +195,17 @@ export function CameraWall({
     }
   }
 
-  async function startBrowser(camera: Camera) {
+  async function startLocal(camera: Camera) {
     try {
-      onCameraChange(await monitor.start(camera, ''));
+      const deviceId = camera.cameraType === 'USB' ? (camera.streamReference ?? '') : '';
+      onCameraChange(await monitor.start(camera, deviceId));
     } catch (err) {
       notify('error', 'Could not start monitoring', errorMessage(err));
     }
   }
 
   function renderCell(camera: Camera, selectOnClick: boolean) {
-    const browserHere = camera.cameraType === 'BROWSER' && monitor.session?.cameraId === camera.id;
+    const localHere = isLocalCamera(camera.cameraType) && monitor.session?.cameraId === camera.id;
     return (
       <div
         className={cn('group relative h-full min-h-0 overflow-hidden bg-black', selectOnClick && 'cursor-pointer')}
@@ -218,18 +219,18 @@ export function CameraWall({
                 <RectangleHorizontal className="h-3.5 w-3.5" />
               </IconButton>
             )}
-            {canMonitor && camera.cameraType === 'BROWSER' && (
-              browserHere ? (
+            {canMonitor && isLocalCamera(camera.cameraType) && (
+              localHere ? (
                 <IconButton title="Stop" onClick={() => void monitor.stop()}>
                   <Square className="h-3.5 w-3.5" />
                 </IconButton>
               ) : (
-                <IconButton title="Start" onClick={() => void startBrowser(camera)}>
+                <IconButton title="Start" onClick={() => void startLocal(camera)}>
                   <Play className="h-3.5 w-3.5" />
                 </IconButton>
               )
             )}
-            {canMonitor && camera.cameraType !== 'BROWSER' && (
+            {canMonitor && !isLocalCamera(camera.cameraType) && (
               <IconButton title={camera.monitoringEnabled ? 'Stop' : 'Start'} onClick={() => onToggle(camera)}>
                 {busyId === camera.id ? <span className="h-3 w-3 animate-spin rounded-full border border-white/40 border-t-white" /> : camera.monitoringEnabled ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
               </IconButton>

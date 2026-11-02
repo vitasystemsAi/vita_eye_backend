@@ -5,11 +5,12 @@ import type { CameraSchedule, CameraType } from '../models/Camera';
 import { cipher } from '../utils/cipher';
 import { AppError } from '../utils/errors';
 import { pageMeta } from '../utils/http';
-import { assertCameraUrlAllowed } from '../utils/network';
+import { assertCameraUrlAllowed, withCredentials } from '../utils/network';
 import { isWithinSchedule } from '../utils/schedule';
 import { testStream } from './ai.client';
 import { audit } from './audit.service';
 import {
+  LOCAL_TYPES,
   NETWORK_TYPES,
   blockedCameraNetworks,
   cameraNetworks,
@@ -99,11 +100,23 @@ interface CameraInput {
   clearCredentials?: boolean;
 }
 
+/** Device id chosen in the browser for a camera plugged in by USB or USB-C. Never fetched as a URL. */
+function usbDeviceReference(raw: string | null | undefined): string | null {
+  const id = raw?.trim() ?? '';
+  if (!id) return null;
+  if (id.length > 512 || /\s/.test(id) || id.includes('://') || id.includes('@')) {
+    throw AppError.validation([{ path: 'streamUrl', message: 'Choose a detected USB or USB-C camera' }]);
+  }
+  return id;
+}
+
 export async function createCamera(ctx: AuthContext, input: CameraInput & { cameraName: string; cameraType: CameraType; location: string }, ip: string | null) {
   assertSiteAllowed(ctx, input.site);
   let streamReference: string | null = null;
   if (NETWORK_TYPES.has(input.cameraType)) {
     streamReference = (await assertCameraUrlAllowed(input.streamUrl!, input.cameraType, cameraNetworks, blockedCameraNetworks)).toString();
+  } else if (input.cameraType === 'USB') {
+    streamReference = usbDeviceReference(input.streamUrl);
   }
   return sequelize.transaction(async (transaction) => {
     const org = await Organization.findByPk(ctx.organizationId, { transaction });
@@ -148,6 +161,9 @@ export async function updateCamera(ctx: AuthContext, id: string, input: CameraIn
     changes.isActive = input.isActive;
     if (!input.isActive) Object.assign(changes, { monitoringEnabled: false, monitorTicketId: null, status: 'DISABLED' });
     else if (cam.status === 'DISABLED') changes.status = 'OFFLINE';
+  }
+  if (cam.cameraType === 'USB') {
+    if (input.streamUrl !== undefined) changes.streamReference = usbDeviceReference(input.streamUrl);
   }
   if (NETWORK_TYPES.has(cam.cameraType)) {
     if (input.streamUrl) changes.streamReference = (await assertCameraUrlAllowed(input.streamUrl, cam.cameraType, cameraNetworks, blockedCameraNetworks)).toString();
@@ -194,14 +210,48 @@ export async function deleteCamera(ctx: AuthContext, id: string, ip: string | nu
 
 export async function testConnection(ctx: AuthContext, id: string, ip: string | null) {
   const cam = await load(ctx, id);
-  if (cam.cameraType === 'BROWSER') {
-    return { ok: true, tested: false, message: 'Browser cameras are verified on the operator device when monitoring starts.' };
+  if (LOCAL_TYPES.has(cam.cameraType)) {
+    return {
+      ok: true,
+      tested: false,
+      message:
+        cam.cameraType === 'USB'
+          ? 'USB and USB-C cameras are verified on the computer the cable is plugged into, when monitoring starts.'
+          : 'Browser cameras are verified on the operator device when monitoring starts.',
+    };
   }
   const result = await testStream(await resolveStreamUrl(id));
   if (result.ok) await setCameraStatus(cam, cam.monitoringEnabled ? cam.status : 'OFFLINE', null);
   else await setCameraStatus(cam, 'ERROR', result.error ?? 'Connection failed');
   if (result.ok) await cam.update({ lastConnectedAt: new Date() });
   await audit({ organizationId: ctx.organizationId, userId: ctx.userId, action: 'CAMERA_TESTED', entityType: 'camera', entityId: id, ipAddress: ip, metadata: { ok: result.ok } });
+  return { ...result, tested: true };
+}
+
+/** Checks the address typed in the form. Does not change the saved camera. */
+export async function testDraftConnection(
+  ctx: AuthContext,
+  input: { cameraId?: string; cameraType: CameraType; streamUrl: string; username?: string | null; password?: string | null; clearCredentials?: boolean },
+  ip: string | null,
+) {
+  await assertCameraUrlAllowed(input.streamUrl, input.cameraType, cameraNetworks, blockedCameraNetworks);
+  let creds: { username?: string; password?: string } | null = null;
+  if (!input.clearCredentials && input.username) {
+    creds = { username: input.username, password: input.password ?? '' };
+  } else if (!input.clearCredentials && input.cameraId) {
+    const cam = await load(ctx, input.cameraId);
+    if (cam.encryptedCredentials) creds = JSON.parse(cipher.decryptString(cam.encryptedCredentials, credentialsAad(cam.id))) as { username?: string; password?: string };
+  }
+  const result = await testStream(withCredentials(input.streamUrl, creds));
+  await audit({
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    action: 'CAMERA_TESTED',
+    entityType: 'camera',
+    entityId: input.cameraId ?? null,
+    ipAddress: ip,
+    metadata: { ok: result.ok, draft: true },
+  });
   return { ...result, tested: true };
 }
 
@@ -213,7 +263,7 @@ export async function startMonitoring(ctx: AuthContext, id: string, ip: string |
     if (others >= 1) throw AppError.forbidden('Multi-camera monitoring is not enabled for this organization');
   }
   let monitorTicket: string | undefined;
-  if (cam.cameraType === 'BROWSER') {
+  if (LOCAL_TYPES.has(cam.cameraType)) {
     // Reuse the live ticket so a second device joining the same camera doesn't cut off the first.
     const ticketId = cam.monitoringEnabled && cam.monitorTicketId ? cam.monitorTicketId : crypto.randomUUID();
     await cam.update({ monitoringEnabled: true, monitorTicketId: ticketId });

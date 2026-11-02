@@ -7,6 +7,7 @@ import { playAlert } from './alertSound';
 import { api, errorMessage } from './api';
 import { socketUrl } from './socket';
 import type { Camera, FrameAck, FrameFace } from './types';
+import { resolveUsbDeviceId } from './usbCameras';
 
 const SESSION_KEY = 'vita.monitor.session';
 const PENDING_STOP_KEY = 'vita.monitor.pendingStop';
@@ -37,6 +38,8 @@ export interface MonitorSession {
   location: string;
   samplingFps: number;
   deviceId: string;
+  /** USB and USB-C cameras must not fall back to the laptop webcam. */
+  usb: boolean;
   ticket: string;
 }
 
@@ -84,17 +87,23 @@ function readSession(raw: string | null): MonitorSession | null {
   if (!raw) return null;
   try {
     const s = JSON.parse(raw) as Partial<MonitorSession>;
-    return s.cameraId && s.ticket ? { cameraName: '', location: '', samplingFps: 1, deviceId: '', ...s } as MonitorSession : null;
+    return s.cameraId && s.ticket ? { cameraName: '', location: '', samplingFps: 1, deviceId: '', usb: false, ...s } as MonitorSession : null;
   } catch {
     return null;
   }
 }
 
-function openCamera(deviceId: string): Promise<MediaStream> {
+function openCamera(deviceId: string, allowDefaultFallback = true): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getUserMedia) return Promise.reject(new Error('Camera access requires HTTPS (or localhost) and a modern browser.'));
-  return navigator.mediaDevices.getUserMedia({
-    video: { ...(deviceId ? { deviceId: { exact: deviceId } } : {}), width: { ideal: 1280 }, height: { ideal: 720 } },
-    audio: false,
+  const video = { width: { ideal: 1280 }, height: { ideal: 720 } };
+  const open = (id: string) =>
+    navigator.mediaDevices.getUserMedia({
+      video: { ...video, ...(id ? { deviceId: { exact: id } } : {}) },
+      audio: false,
+    });
+  return open(deviceId).catch((err: DOMException) => {
+    if (allowDefaultFallback && deviceId && (err?.name === 'NotFoundError' || err?.name === 'OverconstrainedError')) return open('');
+    throw err;
   });
 }
 
@@ -335,6 +344,7 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
 
   // Webcam: kept open for the whole session and re-acquired if it drops out.
   const deviceId = session?.deviceId ?? '';
+  const usb = session?.usb ?? false;
   useEffect(() => {
     if (!owner || !cameraId) return;
     let cancelled = false;
@@ -355,7 +365,8 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       if (streamRef.current?.active) return attach(streamRef.current);
       try {
-        const s = await openCamera(deviceId);
+        const resolved = usb ? await resolveUsbDeviceId(deviceId) : deviceId;
+        const s = await openCamera(resolved, !usb);
         if (cancelled) return s.getTracks().forEach((t) => t.stop());
         attach(s);
       } catch (err) {
@@ -373,7 +384,7 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
       grabberRef.current = null;
       setStream(null);
     };
-  }, [owner, cameraId, deviceId, resumeNonce]);
+  }, [owner, cameraId, deviceId, usb, resumeNonce]);
 
   useEffect(() => {
     const v = videoRef.current;
@@ -515,8 +526,10 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
       setStarting(true);
       let s: MediaStream | null = null;
       try {
+        const usbCamera = camera.cameraType === 'USB';
+        const resolved = usbCamera ? await resolveUsbDeviceId(devId) : devId;
         try {
-          s = await openCamera(devId);
+          s = await openCamera(resolved, !usbCamera);
         } catch (err) {
           throw new Error(cameraErrorMessage(err));
         }
@@ -532,7 +545,8 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
           cameraName: data.camera.cameraName,
           location: data.camera.location,
           samplingFps: data.camera.samplingFps,
-          deviceId: devId,
+          deviceId: resolved,
+          usb: usbCamera,
           ticket: data.monitorTicket,
         };
         localStorage.setItem(SESSION_KEY, JSON.stringify(next));

@@ -140,7 +140,7 @@ class StreamWorker(threading.Thread):
             cap, resolved, error = open_working_capture(self.cfg.url)
             if cap is None:
                 self._set_status("ERROR", error or "Unable to connect to stream")
-                log.warning("Camera %s: connect failed (%s); retry in %.0fs", self.cfg.camera_id, redact(self.cfg.url), backoff)
+                log.warning("Camera %s: %s (%s); retry in %.0fs", self.cfg.camera_id, error or "connect failed", redact(self.cfg.url), backoff)
                 self._stop_event.wait(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF_SEC)
                 continue

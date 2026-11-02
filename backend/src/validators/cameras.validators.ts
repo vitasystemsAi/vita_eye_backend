@@ -32,9 +32,11 @@ const base = {
   samplingFps: z.number().min(0.2).max(15).optional(),
 };
 
+const cameraTypes = ['BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG', 'USB', 'LAN'] as const;
+
 export const createCameraSchema = z
-  .object({ ...base, cameraType: z.enum(['BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG']) })
-  .refine((c) => c.cameraType === 'BROWSER' || !!c.streamUrl, {
+  .object({ ...base, cameraType: z.enum(cameraTypes) })
+  .refine((c) => c.cameraType === 'BROWSER' || c.cameraType === 'USB' || !!c.streamUrl, {
     message: 'streamUrl is required for network cameras',
     path: ['streamUrl'],
   });
@@ -49,11 +51,20 @@ export const updateCameraSchema = z
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'No changes supplied' });
 
+export const testDraftSchema = z.object({
+  cameraId: z.string().uuid().optional(),
+  cameraType: z.enum(['RTSP', 'ONVIF', 'HTTP_MJPEG', 'LAN']),
+  streamUrl: z.string().trim().min(1).max(512),
+  username: z.string().max(128).optional().nullable(),
+  password: z.string().max(256).optional().nullable(),
+  clearCredentials: z.boolean().optional(),
+});
+
 export const listCamerasSchema = paginationSchema.extend({
   pageSize: z.coerce.number().int().min(1).max(200).default(100),
   site: z.string().trim().max(120).optional(),
   location: z.string().trim().max(160).optional(),
   status: z.enum(['ONLINE', 'OFFLINE', 'ERROR', 'DISABLED']).optional(),
-  type: z.enum(['BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG']).optional(),
+  type: z.enum(cameraTypes).optional(),
   search: z.string().trim().max(100).optional(),
 });

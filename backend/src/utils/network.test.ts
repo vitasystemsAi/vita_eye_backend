@@ -30,6 +30,12 @@ describe('assertCameraUrlAllowed', () => {
     await expect(assertCameraUrlAllowed('rtsp://192.168.1.5/s', 'HTTP_MJPEG', lan)).rejects.toThrow();
   });
 
+  it('accepts a LAN-port camera on RTSP or HTTP inside approved networks', async () => {
+    await expect(assertCameraUrlAllowed('rtsp://192.168.1.64:554/stream1', 'LAN', lan)).resolves.toBeInstanceOf(URL);
+    await expect(assertCameraUrlAllowed('http://192.168.1.64/video', 'LAN', lan)).resolves.toBeInstanceOf(URL);
+    await expect(assertCameraUrlAllowed('file:///dev/video0', 'LAN', lan)).rejects.toThrow();
+  });
+
   it('rejects embedded credentials', async () => {
     await expect(assertCameraUrlAllowed('rtsp://admin:pw@192.168.1.5/s', 'RTSP', lan)).rejects.toThrow();
   });

@@ -151,7 +151,7 @@ export function stopStream(cameraId: string) {
 }
 
 export function testStream(url: string) {
-  return call<{ ok: boolean; width?: number; height?: number; error?: string }>('/v1/streams/test', { ...json({ url }), timeoutMs: 20000 });
+  return call<{ ok: boolean; width?: number; height?: number; error?: string }>('/v1/streams/test', { ...json({ url }), timeoutMs: 45000 });
 }
 
 export function listStreams() {

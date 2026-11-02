@@ -10,7 +10,8 @@ import { errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useMonitor, type MonitorStatus } from '@/lib/monitor';
 import { useSocket } from '@/lib/socket';
-import type { Camera, FrameFace } from '@/lib/types';
+import { isLocalCamera, type Camera, type FrameFace } from '@/lib/types';
+import { listVideoInputs, splitVideoInputs } from '@/lib/usbCameras';
 
 const PILL: Partial<Record<MonitorStatus, { text: string; className: string }>> = {
   running: { text: 'LIVE', className: 'bg-red-600/90' },
@@ -313,8 +314,8 @@ export function RemotePreview({
   );
 }
 
-/** Local webcam picture for one browser-camera tile. Controls live on the camera wall. */
-export function BrowserStage({ camera }: { camera: Camera }) {
+/** Local picture for a browser webcam or a USB / USB-C cable camera. Controls live on the camera wall. */
+export function BrowserStage({ camera, mirror = true }: { camera: Camera; mirror?: boolean }) {
   const monitor = useMonitor();
   const { session, status, stream, faces, frameSize } = monitor;
   const mine = session?.cameraId === camera.id;
@@ -325,8 +326,8 @@ export function BrowserStage({ camera }: { camera: Camera }) {
   return (
     <div className="absolute inset-0 bg-black">
       <video ref={videoRef} playsInline muted className="pointer-events-none absolute h-px w-px opacity-0" />
-      <canvas ref={canvasRef} className={`absolute inset-0 h-full w-full scale-x-[-1] object-contain ${showVideo ? '' : 'invisible'}`} />
-      {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={smoothFaces} fit="contain" mirror />}
+      <canvas ref={canvasRef} className={`absolute inset-0 h-full w-full object-contain ${mirror ? 'scale-x-[-1]' : ''} ${showVideo ? '' : 'invisible'}`} />
+      {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={smoothFaces} fit="contain" mirror={mirror} />}
       {!showVideo && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center text-ink-500">
           <CameraIcon className="h-8 w-8" />
@@ -342,18 +343,18 @@ function emptyCameraCopy(role: string | undefined, siteScope: string[] | null | 
   if (siteScope?.length) {
     return {
       title: 'No camera for this screen',
-      body: `This account only sees cameras in ${siteScope.join(', ')}. None of those sites has an active browser camera.`,
+      body: `This account only sees cameras in ${siteScope.join(', ')}. None of those sites has an active browser or USB camera.`,
     };
   }
   if (role === 'PREVIEW') {
     return {
       title: 'No camera for this screen',
-      body: 'An administrator needs to add an active browser camera before this screen can show video.',
+      body: 'An administrator needs to add an active browser or USB camera before this screen can show video.',
     };
   }
   return {
     title: 'No active browser cameras',
-    body: 'Create a camera of type "Browser" in Camera Management to monitor using this computer\'s webcam.',
+    body: 'Create a Browser or USB / USB-C camera in Camera Management. A USB camera must be plugged into this computer.',
   };
 }
 
@@ -373,7 +374,7 @@ export function BrowserMonitor({
   const monitor = useMonitor();
   const { session, status, stream, faces, frameSize, stats } = monitor;
   const smoothFaces = useSmoothFaces(faces);
-  const browserCams = cameras.filter((c) => c.cameraType === 'BROWSER' && c.isActive);
+  const browserCams = cameras.filter((c) => isLocalCamera(c.cameraType) && c.isActive);
   const [cameraId, setCameraId] = useState('');
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState('');
@@ -388,11 +389,26 @@ export function BrowserMonitor({
     if (!cameraId && browserCams.length) setCameraId(browserCams[0].id);
   }, [browserCams, cameraId]);
 
+  useEffect(() => {
+    if (session) return;
+    const selected = cameras.find((item) => item.id === cameraId);
+    if (selected?.cameraType === 'USB' && selected.streamReference) setDeviceId(selected.streamReference);
+  }, [cameraId, session, cameras]);
+
   const refreshDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
+    if (camera?.cameraType === 'USB') {
+      try {
+        const list = await listVideoInputs();
+        setDevices(splitVideoInputs(list).cable);
+      } catch {
+        setDevices([]);
+      }
+      return;
+    }
     const list = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
     setDevices(list);
-  }, []);
+  }, [camera?.cameraType]);
   useEffect(() => void refreshDevices(), [refreshDevices, stream]);
 
   async function start() {
@@ -440,6 +456,7 @@ export function BrowserMonitor({
   const pill = PILL[status];
   const problem = active ? monitor.error : (startError ?? monitor.notice);
   const waitingText = status === 'other-tab' ? 'Monitoring is running in another tab on this device' : active ? 'Waiting for the camera…' : 'Camera preview appears here';
+  const mirrorPreview = camera?.cameraType !== 'USB';
 
   return (
     <div className={tile ? 'space-y-3 p-4' : 'space-y-4 p-5'}>
@@ -457,12 +474,12 @@ export function BrowserMonitor({
           </Field>
         </div>
         <div className="min-w-[200px] flex-1">
-          <Field label="Video device">
+          <Field label={camera?.cameraType === 'USB' ? 'USB camera' : 'Video device'}>
             <Select value={session?.deviceId ?? deviceId} onChange={(e) => setDeviceId(e.target.value)} disabled={active}>
-              <option value="">Default camera</option>
+              <option value="">{camera?.cameraType === 'USB' ? 'First USB camera' : 'Default camera'}</option>
               {devices.map((d, i) => (
                 <option key={d.deviceId || i} value={d.deviceId}>
-                  {d.label || `Camera ${i + 1}`}
+                  {d.label || `USB camera ${i + 1}`}
                 </option>
               ))}
             </Select>
@@ -481,8 +498,8 @@ export function BrowserMonitor({
 
       <div className="relative overflow-hidden rounded-xl border border-ink-700 bg-black">
         <video ref={videoRef} playsInline muted className="pointer-events-none absolute h-px w-px opacity-0" />
-        <canvas ref={canvasRef} className={`block h-auto max-h-[70vh] w-full scale-x-[-1] object-contain ${showVideo ? '' : 'hidden'}`} />
-        {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={smoothFaces} fit="stretch" mirror />}
+        <canvas ref={canvasRef} className={`block h-auto max-h-[70vh] w-full object-contain ${mirrorPreview ? 'scale-x-[-1]' : ''} ${showVideo ? '' : 'hidden'}`} />
+        {showVideo && frameSize && status === 'running' && <FaceOverlay frameSize={frameSize} faces={smoothFaces} fit="stretch" mirror={mirrorPreview} />}
         {!showVideo && (
           <div className="flex aspect-video flex-col items-center justify-center gap-2 text-center text-ink-400">
             <CameraIcon className="h-10 w-10" />

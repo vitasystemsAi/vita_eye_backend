@@ -164,7 +164,12 @@ export interface EnrollImageResult {
   message?: string;
 }
 
-export type CameraType = 'BROWSER' | 'RTSP' | 'ONVIF' | 'HTTP_MJPEG';
+export type CameraType = 'BROWSER' | 'RTSP' | 'ONVIF' | 'HTTP_MJPEG' | 'USB' | 'LAN';
+
+/** Picture is captured on this computer: the built-in webcam, or a camera on a USB / USB-C cable. */
+export function isLocalCamera(type: CameraType): boolean {
+  return type === 'BROWSER' || type === 'USB';
+}
 export type CameraStatus = 'ONLINE' | 'OFFLINE' | 'ERROR' | 'DISABLED';
 
 export interface CameraSchedule {

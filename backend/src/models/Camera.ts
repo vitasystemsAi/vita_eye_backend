@@ -1,7 +1,7 @@
 import { CreationOptional, DataTypes, InferAttributes, InferCreationAttributes, Model } from 'sequelize';
 import { sequelize } from '../config/database';
 
-export type CameraType = 'BROWSER' | 'RTSP' | 'ONVIF' | 'HTTP_MJPEG';
+export type CameraType = 'BROWSER' | 'RTSP' | 'ONVIF' | 'HTTP_MJPEG' | 'USB' | 'LAN';
 export type CameraStatus = 'ONLINE' | 'OFFLINE' | 'ERROR' | 'DISABLED';
 
 export interface CameraSchedule {
@@ -39,7 +39,7 @@ Camera.init(
     id: { type: DataTypes.UUID, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
     organizationId: { type: DataTypes.UUID, allowNull: false },
     cameraName: { type: DataTypes.STRING(120), allowNull: false },
-    cameraType: { type: DataTypes.ENUM('BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG'), allowNull: false },
+    cameraType: { type: DataTypes.ENUM('BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG', 'USB', 'LAN'), allowNull: false },
     location: { type: DataTypes.STRING(160), allowNull: false },
     site: { type: DataTypes.STRING(120), allowNull: true },
     streamReference: { type: DataTypes.STRING(512), allowNull: true },

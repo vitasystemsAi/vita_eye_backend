@@ -74,4 +74,6 @@ def test_offline_host_fails_without_trying_every_path():
     cap, resolved, error = open_working_capture("http://127.0.0.1:1/")
     assert cap is None
     assert resolved == "http://127.0.0.1:1/"
-    assert error == "Unable to connect to stream"
+    assert error is not None
+    assert "127.0.0.1 port 1" in error
+    assert "Nothing is listening" in error

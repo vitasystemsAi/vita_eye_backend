@@ -1,6 +1,6 @@
 'use client';
 
-import { Camera as CameraIcon, MoreHorizontal, Pencil, Play, Plus, Power, PlugZap, Square, Trash2 } from 'lucide-react';
+import { Camera as CameraIcon, MoreHorizontal, Pencil, Play, Plus, Power, PlugZap, Square, Trash2, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import { CameraStatusBadge } from '@/components/badges';
 import { CameraForm, type CameraPayload } from '@/components/cameras/CameraForm';
@@ -12,9 +12,9 @@ import { useAuth } from '@/lib/auth';
 import { fmtRelative } from '@/lib/format';
 import { useApi, useDebounced } from '@/lib/hooks';
 import { useSocketEvent } from '@/lib/socket';
-import type { Camera, CameraStatus } from '@/lib/types';
+import { isLocalCamera, type Camera, type CameraStatus } from '@/lib/types';
 
-const TYPE_LABEL: Record<Camera['cameraType'], string> = { BROWSER: 'Browser', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
+const TYPE_LABEL: Record<Camera['cameraType'], string> = { BROWSER: 'Browser', USB: 'USB', LAN: 'LAN', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
 
 function CamerasView() {
   const { can } = useAuth();
@@ -27,6 +27,7 @@ function CamerasView() {
   const sites = (raw?.sites as string[] | undefined) ?? [];
   const [editing, setEditing] = useState<Camera | 'new' | null>(null);
   const [deleting, setDeleting] = useState<Camera | null>(null);
+  const [errorCamera, setErrorCamera] = useState<Camera | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
 
@@ -42,7 +43,7 @@ function CamerasView() {
     try {
       if (action === 'test') {
         const { data: r } = await api.post<{ ok: boolean; tested: boolean; message?: string; error?: string; width?: number; height?: number }>(`/cameras/${c.id}/test-connection`);
-        if (!r.tested) notify('info', 'Browser camera', r.message);
+        if (!r.tested) notify('info', c.cameraType === 'USB' ? 'USB camera' : 'Browser camera', r.message);
         else if (r.ok) notify('success', 'Connection OK', r.width ? `Received a ${r.width}×${r.height} frame from ${c.cameraName}.` : undefined);
         else notify('error', 'Connection failed', r.error ?? 'The stream could not be opened.');
         void reload();
@@ -95,7 +96,7 @@ function CamerasView() {
       <PageHeader
         title="Camera Management"
         icon={<CameraIcon className="h-5 w-5" />}
-        description="Browser webcams stream from an operator device; RTSP/ONVIF/MJPEG cameras are ingested server-side."
+        description="USB and USB-C cameras open on the computer the cable is plugged into. LAN-port cameras are reached directly by IP. RTSP, ONVIF, and MJPEG streams are ingested on the server."
         actions={can('cameras:manage') && <Button icon={<Plus className="h-4 w-4" />} onClick={() => setEditing('new')}>Add camera</Button>}
       />
       <Card>
@@ -121,7 +122,7 @@ function CamerasView() {
         {loading && !data ? (
           <LoadingBlock />
         ) : !data?.length ? (
-          <EmptyState icon={<CameraIcon className="h-6 w-6" />} title="No cameras" description="Add a browser camera to monitor from this computer's webcam, or an IP camera on an approved network." />
+          <EmptyState icon={<CameraIcon className="h-6 w-6" />} title="No cameras" description="Add a USB or USB-C cable camera, a LAN-port camera by IP, or a browser webcam." />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -142,7 +143,11 @@ function CamerasView() {
                     <td className="table-cell">
                       <p className="font-medium">{c.cameraName}</p>
                       {c.streamReference && <p className="max-w-[260px] truncate font-mono text-[11px] text-ink-400" title={c.streamReference}>{c.streamReference}</p>}
-                      {c.status === 'ERROR' && c.lastError && <p className="max-w-[260px] truncate text-xs text-red-300" title={c.lastError}>{c.lastError}</p>}
+                      {c.status === 'ERROR' && c.lastError && (
+                        <button type="button" onClick={() => setErrorCamera(c)} className="mt-0.5 block max-w-[260px] truncate text-left text-xs text-red-300 underline decoration-red-400/40 hover:text-red-200" title="View the full error">
+                          {c.lastError}
+                        </button>
+                      )}
                     </td>
                     <td className="table-cell">
                       <Badge>{TYPE_LABEL[c.cameraType]}</Badge>
@@ -184,7 +189,10 @@ function CamerasView() {
                             <Button size="sm" variant="ghost" aria-label="More actions" onClick={() => setMenu(menu === c.id ? null : c.id)} icon={<MoreHorizontal className="h-4 w-4" />} />
                             {menu === c.id && (
                               <div className="absolute right-0 z-20 mt-1 w-48 overflow-hidden rounded-lg border border-ink-700 bg-ink-850 py-1 shadow-xl" onMouseLeave={() => setMenu(null)}>
-                                {c.cameraType !== 'BROWSER' && (
+                                {c.status === 'ERROR' && c.lastError && (
+                                  <MenuItem icon={<TriangleAlert className="h-4 w-4" />} onClick={() => { setMenu(null); setErrorCamera(c); }}>View error</MenuItem>
+                                )}
+                                {!isLocalCamera(c.cameraType) && (
                                   <MenuItem icon={<PlugZap className="h-4 w-4" />} onClick={() => void run(c, 'test')}>Test connection</MenuItem>
                                 )}
                                 <MenuItem icon={<Pencil className="h-4 w-4" />} onClick={() => { setMenu(null); setEditing(c); }}>Edit</MenuItem>
@@ -206,6 +214,19 @@ function CamerasView() {
 
       <Modal open={editing !== null} onClose={() => setEditing(null)} title={editing === 'new' ? 'Add camera' : `Edit ${editing?.cameraName ?? ''}`} size="lg">
         {editing !== null && <CameraForm camera={editing === 'new' ? undefined : editing} onSubmit={save} onCancel={() => setEditing(null)} />}
+      </Modal>
+      <Modal
+        open={errorCamera !== null}
+        onClose={() => setErrorCamera(null)}
+        title={errorCamera ? `${errorCamera.cameraName} error` : 'Camera error'}
+        footer={<Button variant="secondary" onClick={() => setErrorCamera(null)}>Close</Button>}
+      >
+        {errorCamera && (
+          <div className="space-y-3">
+            <p className="whitespace-pre-wrap break-words text-sm text-red-200">{errorCamera.lastError}</p>
+            {errorCamera.streamReference && <p className="break-all font-mono text-xs text-ink-400">{errorCamera.streamReference}</p>}
+          </div>
+        )}
       </Modal>
       <ConfirmDialog
         open={deleting !== null}

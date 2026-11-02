@@ -4,7 +4,7 @@ import * as cameras from '../services/cameras.service';
 import { parse } from '../utils/errors';
 import { clientIp, created, ok } from '../utils/http';
 import { idParam } from '../validators/users.validators';
-import { createCameraSchema, listCamerasSchema, updateCameraSchema } from '../validators/cameras.validators';
+import { createCameraSchema, listCamerasSchema, testDraftSchema, updateCameraSchema } from '../validators/cameras.validators';
 
 export async function list(req: Request, res: Response) {
   const { items, meta, sites } = await cameras.listCameras(authOf(req), parse(listCamerasSchema, req.query));
@@ -29,6 +29,10 @@ export async function remove(req: Request, res: Response) {
 
 export async function test(req: Request, res: Response) {
   ok(res, await cameras.testConnection(authOf(req), parse(idParam, req.params).id, clientIp(req)));
+}
+
+export async function testDraft(req: Request, res: Response) {
+  ok(res, await cameras.testDraftConnection(authOf(req), parse(testDraftSchema, req.body), clientIp(req)));
 }
 
 export async function start(req: Request, res: Response) {

@@ -28,7 +28,10 @@ const PREVIEW_INTERVAL_MS = 80;
 const MAX_FRAME_BYTES = 2 * 1024 * 1024;
 const BROWSER_OFFLINE_AFTER_MS = 45_000;
 
-export const NETWORK_TYPES = new Set(['RTSP', 'ONVIF', 'HTTP_MJPEG']);
+/** Cameras whose picture is captured on the operator computer (built-in webcam or a USB / USB-C cable). */
+export const LOCAL_TYPES = new Set(['BROWSER', 'USB']);
+/** Cameras the server opens itself, including a camera plugged into the LAN port and addressed by IP. */
+export const NETWORK_TYPES = new Set(['RTSP', 'ONVIF', 'HTTP_MJPEG', 'LAN']);
 
 export { credentialsAad };
 
@@ -111,7 +114,7 @@ export async function handleBrowserFrame(ctx: AuthContext, cameraId: string, jpe
 
   const camera = await Camera.findByPk(cameraId);
   if (!camera || !cameraInScope(ctx, camera)) return { ok: false, error: 'CAMERA_NOT_FOUND' };
-  if (camera.cameraType !== 'BROWSER') return { ok: false, error: 'NOT_A_BROWSER_CAMERA' };
+  if (!LOCAL_TYPES.has(camera.cameraType)) return { ok: false, error: 'NOT_A_BROWSER_CAMERA' };
   if (!camera.isActive) return { ok: false, error: 'CAMERA_INACTIVE' };
   if (!camera.monitoringEnabled) return { ok: false, error: 'MONITORING_NOT_STARTED' };
   if (ticketId !== undefined && camera.monitorTicketId !== ticketId) return { ok: false, error: 'MONITORING_NOT_STARTED' };
@@ -192,7 +195,7 @@ export async function stopTenantStreams(reason: string) {
 
 async function reconcileTenantCameras(getRunning: RunningStreams, organizationActive: boolean) {
   const stale = await Camera.findAll({
-    where: { cameraType: 'BROWSER', status: 'ONLINE', lastConnectedAt: { [Op.lt]: new Date(Date.now() - BROWSER_OFFLINE_AFTER_MS) } },
+    where: { cameraType: { [Op.in]: [...LOCAL_TYPES] }, status: 'ONLINE', lastConnectedAt: { [Op.lt]: new Date(Date.now() - BROWSER_OFFLINE_AFTER_MS) } },
   });
   for (const cam of stale) await setCameraStatus(cam, 'OFFLINE');
 

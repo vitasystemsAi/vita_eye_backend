@@ -11,6 +11,7 @@ import logging
 import os
 import select
 import socket
+import ssl
 import threading
 import time
 from typing import Optional
@@ -308,6 +309,167 @@ def _frame_ok(cap) -> bool:
     return bool(ok and frame is not None)
 
 
+def _host_port(parsed) -> tuple[str, int]:
+    host = parsed.hostname or ""
+    if parsed.port:
+        return host, parsed.port
+    if parsed.scheme in ("rtsp", "rtsps"):
+        return host, 554
+    if parsed.scheme == "https":
+        return host, 443
+    return host, 80
+
+
+def _tcp_failure(host: str, port: int, timeout: float = 4) -> Optional[str]:
+    """Why a TCP connection failed, or None when the port accepted one."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return None
+    except TimeoutError:
+        return (
+            f"{host} port {port} did not answer within {int(timeout)} seconds. "
+            "The camera is unreachable from this server: the IP is wrong, the cable is unplugged, or a firewall is blocking that port."
+        )
+    except ConnectionRefusedError:
+        return f"Nothing is listening on {host} port {port}. The camera is off, RTSP is disabled, or the port is wrong."
+    except socket.gaierror as exc:
+        detail = exc.strerror or "name not found"
+        return f"The address {host} could not be resolved ({detail})."
+    except OSError as exc:
+        code = getattr(exc, "winerror", None) or exc.errno
+        if code in (10060, 110, 60):
+            return (
+                f"{host} port {port} did not answer. "
+                "The camera is unreachable from this server: the IP is wrong, the cable is unplugged, or a firewall is blocking that port."
+            )
+        if code in (10051, 10065, 101, 113):
+            return f"No route to {host}. This server is not on a network that can reach that camera."
+        if code in (10061, 111, 61):
+            return f"Nothing is listening on {host} port {port}. The camera is off, RTSP is disabled, or the port is wrong."
+        detail = exc.strerror or str(exc)
+        return f"Could not open {host} port {port}: {detail}."
+
+
+def _describe_bytes(url: str, host: str, port: int, scheme: str) -> bytes:
+    """RTSP DESCRIBE with the password removed from the request URI."""
+    parsed = urlparse(url)
+    netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    target = urlunparse(parsed._replace(scheme=scheme, netloc=netloc))
+    headers = ["CSeq: 1", "Accept: application/sdp", "User-Agent: VitaEye"]
+    if parsed.username:
+        user = unquote(parsed.username)
+        password = unquote(parsed.password or "")
+        token = base64.b64encode(f"{user}:{password}".encode()).decode()
+        headers.append(f"Authorization: Basic {token}")
+    return (f"DESCRIBE {target} RTSP/1.0\r\n" + "\r\n".join(headers) + "\r\n\r\n").encode()
+
+
+def _status_line(data: bytes) -> Optional[tuple[int, str]]:
+    line = data.split(b"\r\n", 1)[0].decode("latin1", "replace").strip()
+    parts = line.split(" ", 2)
+    if len(parts) < 2 or not parts[1].isdigit():
+        return None
+    return int(parts[1]), parts[2] if len(parts) > 2 else ""
+
+
+def _read_status(sock) -> Optional[tuple[int, str]]:
+    data = b""
+    while b"\r\n" not in data and len(data) < 512:
+        chunk = sock.recv(256)
+        if not chunk:
+            break
+        data += chunk
+    return _status_line(data)
+
+
+def _rtsp_status(url: str, host: str, port: int) -> Optional[tuple[int, str]]:
+    """First RTSP status line from DESCRIBE, or None when the camera stays silent."""
+    sock = socket.create_connection((host, port), timeout=4)
+    try:
+        sock.settimeout(4)
+        sock.sendall(_describe_bytes(url, host, port, "rtsp"))
+        return _read_status(sock)
+    except (TimeoutError, OSError):
+        return None
+    finally:
+        sock.close()
+
+
+def _rtsps_status(url: str, host: str, port: int) -> Optional[tuple[int, str]]:
+    """DESCRIBE over TLS. None when the port is not RTSPS."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        raw = socket.create_connection((host, port), timeout=4)
+        sock = context.wrap_socket(raw, server_hostname=host or None)
+    except (TimeoutError, OSError, ssl.SSLError):
+        return None
+    try:
+        sock.settimeout(4)
+        sock.sendall(_describe_bytes(url, host, port, "rtsps"))
+        return _read_status(sock)
+    except (TimeoutError, OSError, ssl.SSLError):
+        return None
+    finally:
+        sock.close()
+
+
+def _rtsp_reply_message(host: str, path: str, code: int, reason: str, username: Optional[str], encrypted: bool) -> str:
+    via = "RTSPS" if encrypted else "RTSP"
+    switch = " Change the address from rtsp:// to rtsps://." if encrypted else ""
+    if code in (401, 403):
+        if username:
+            return f"The camera at {host} refused the login ({via} {code}). Check the username and password.{switch}"
+        return f"The camera at {host} requires a username and password ({via} {code}), and none is saved.{switch}"
+    if code == 404:
+        return (
+            f"The camera at {host} is online, but the path {path} was not found ({via} 404). "
+            "Use the camera's real stream path, such as /video/live or /Streaming/Channels/101."
+            + switch
+        )
+    if 200 <= code < 300:
+        return (
+            f"The camera at {host} accepted {path} ({via} {code}), but no video frame arrived. "
+            "The stream profile or codec may be unsupported."
+            + switch
+        )
+    status = f"{code} {reason}".strip()
+    return f"The camera at {host} answered {via} {status} for {path}, and no video frame arrived.{switch}"
+
+
+def explain_connect_failure(url: str) -> str:
+    """Plain reason a camera URL produced no picture. Never includes a password."""
+    parsed = urlparse(url)
+    host, port = _host_port(parsed)
+    if not host:
+        return "The stream address has no host."
+    if parsed.scheme not in ("rtsp", "rtsps", "http", "https"):
+        scheme = parsed.scheme or "an unknown scheme"
+        return f"This address uses {scheme}, which is not an RTSP or HTTP video stream."
+    tcp = _tcp_failure(host, port)
+    if tcp:
+        return tcp[:500]
+    path = parsed.path or "/"
+    if parsed.scheme == "rtsp":
+        reply = _rtsp_status(url, host, port)
+        encrypted = False
+        if reply is None:
+            reply = _rtsps_status(url, host, port)
+            encrypted = reply is not None
+        if reply is None:
+            return f"{host} port {port} is open, but the camera sent no RTSP reply for {path}. Check that RTSP is enabled."
+        code, reason = reply
+        return _rtsp_reply_message(host, path, code, reason, parsed.username, encrypted)[:500]
+    if parsed.scheme == "rtsps":
+        reply = _rtsps_status(url, host, port)
+        if reply is None:
+            return f"{host} port {port} is open, but no secure RTSP reply arrived for {path}. Check that RTSPS is enabled."
+        code, reason = reply
+        return _rtsp_reply_message(host, path, code, reason, parsed.username, False)[:500]
+    return f"{host} port {port} is open, but no video frame arrived for {path}."
+
+
 def _open_rtsp(url: str):
     """TCP first. Low-delay flags keep the live picture from sitting in FFmpeg's queue."""
     live = "stimeout;5000000|max_delay;0|fflags;nobuffer|flags;low_delay"
@@ -317,7 +479,7 @@ def _open_rtsp(url: str):
         if _frame_ok(cap):
             return cap, url, None
         cap.release()
-    return None, url, "Unable to connect to stream"
+    return None, url, explain_connect_failure(url)
 
 
 def _open_http_picture(url: str, kind: str):
@@ -341,14 +503,14 @@ def open_working_capture(url: str):
     if parsed.scheme in ("rtsp", "rtsps"):
         return _open_rtsp(url)
     if parsed.scheme not in ("http", "https"):
-        return None, url, "Unable to connect to stream"
+        return None, url, explain_connect_failure(url)
 
     saw_page = False
     for index, candidate in enumerate(stream_candidates(url)):
         kind = sniff(candidate)
         if kind == "down":
             if index == 0:
-                return None, url, "Unable to connect to stream"
+                return None, url, explain_connect_failure(url)
             continue
         if kind == "html":
             saw_page = True
@@ -362,4 +524,4 @@ def open_working_capture(url: str):
             return cap, candidate, None
     if saw_page:
         return None, url, "This address is the camera web page, and no video feed was found on it"
-    return None, url, "Unable to connect to stream"
+    return None, url, explain_connect_failure(url)

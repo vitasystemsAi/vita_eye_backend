@@ -8,6 +8,7 @@ r.use(authenticate);
 
 r.get('/', requirePermission('cameras:view'), c.list);
 r.post('/', requirePermission('cameras:manage'), c.create);
+r.post('/test-connection', sensitiveLimiter, requirePermission('cameras:manage'), c.testDraft);
 r.get('/:id', requirePermission('cameras:view'), c.get);
 r.patch('/:id', requirePermission('cameras:manage'), c.update);
 r.delete('/:id', requirePermission('cameras:manage'), c.remove);
