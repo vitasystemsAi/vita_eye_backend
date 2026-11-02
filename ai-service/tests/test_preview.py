@@ -10,6 +10,6 @@ def test_preview_jpeg_fits_the_monitoring_wall():
     assert encoded is not None
     jpeg, size, scaled = encoded
     assert jpeg[:2] == b"\xff\xd8"
-    assert max(size) <= 720
+    assert max(size) <= 960
     assert scaled[0]["bbox"][0] < 100
     assert scaled[0]["bbox"][2] < 300

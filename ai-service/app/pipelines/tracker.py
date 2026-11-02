@@ -6,10 +6,14 @@ observations inside the temporal window agree. Two fast paths keep fast-moving p
 escaping unrecorded:
 
 * a single observation that clears the known threshold by a wide margin is confirmed at once;
-* a track that leaves the frame before reaching the frame quota is finalised from whatever usable
-  observations it collected (the event carries ``frames_observed`` so reviewers can weigh it).
+* a registered match that leaves the frame before reaching the frame quota is finalised from
+  whatever usable observations it collected (the event carries ``frames_observed``).
 
-Each track emits at most one event. Unknown faces are additionally de-duplicated against a
+Each track emits at most one event. An unrecognized face is the exception to the single
+quota: it is only recorded after two separate agreeing passes (double verification). The
+first pass marks the track; the second pass, made of new frames only, is what can still
+match a registered person. Leaving before that second pass does not count the face and
+does not notify. Unknown faces that do pass both checks are de-duplicated against a
 short-term memory of recently reported unknown embeddings on the same camera.
 """
 from __future__ import annotations
@@ -69,6 +73,8 @@ class Track:
     evidence_frame: Optional[np.ndarray] = None
     evidence_bbox: Optional[tuple[int, int, int, int]] = None
     shown_person_id: Optional[str] = None
+    # Set when the first unrecognized pass agrees. The second pass uses only later frames.
+    unknown_verified_at: Optional[float] = None
 
     def appearance(self) -> Optional[np.ndarray]:
         """Unit mean of the recent embeddings on this track, used to keep a name on the right face."""
@@ -176,6 +182,27 @@ def _repair_crossed_faces(
     return repaired
 
 
+def _majority(usable: list[Observation]) -> tuple[str, Optional[str], float]:
+    votes = Counter((o.label, o.person_id if o.label == "KNOWN" else None) for o in usable)
+    (label, person_id), count = votes.most_common(1)[0]
+    return label, person_id, count / len(usable)
+
+
+def _usable(track: Track, now: float, policy: Policy) -> list[Observation]:
+    return [o for o in track.observations if now - o.t <= policy.temporal_window_sec and o.label != "LOW_QUALITY"]
+
+
+def _strong_known(usable: list[Observation], policy: Policy) -> bool:
+    last = usable[-1]
+    return bool(
+        last.label == "KNOWN"
+        and last.person_id
+        and last.similarity is not None
+        and last.similarity >= policy.known_threshold + INSTANT_KNOWN_BOOST
+        and not any(o.label == "KNOWN" and o.person_id != last.person_id for o in usable)
+    )
+
+
 def centre_close(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
     acx, acy = a[0] + a[2] / 2, a[1] + a[3] / 2
     bcx, bcy = b[0] + b[2] / 2, b[1] + b[3] / 2
@@ -258,37 +285,76 @@ class CameraTracker:
     def evaluate(self, track: Track, policy: Policy, now: float) -> Optional[Decision]:
         if track.emitted:
             return None
-        usable = [o for o in track.observations if now - o.t <= policy.temporal_window_sec and o.label != "LOW_QUALITY"]
+        usable = _usable(track, now, policy)
         if not usable:
             return None
 
-        last = usable[-1]
-        if (
-            last.label == "KNOWN"
-            and last.similarity is not None
-            and last.similarity >= policy.known_threshold + INSTANT_KNOWN_BOOST
-            and not any(o.label == "KNOWN" and o.person_id != last.person_id for o in usable)
-        ):
+        # A registered match that is already very strong is not held for a second pass.
+        if _strong_known(usable, policy) and track.unknown_verified_at is None:
             return self._decide(track, usable, policy, now, final=True)
 
+        if track.unknown_verified_at is not None:
+            return self._second_unknown_pass(track, usable, policy, now, closing=False)
+
         if len(usable) < policy.temporal_min_frames:
+            return None
+
+        label, _person, ratio = _majority(usable)
+        if label == "UNKNOWN" and ratio >= policy.temporal_agreement:
+            # First verification only. Counting and notification wait for a second pass.
+            track.unknown_verified_at = now
             return None
         return self._decide(track, usable, policy, now, final=len(usable) >= 2 * policy.temporal_min_frames)
 
     def finalize(self, track: Track, policy: Policy) -> Optional[Decision]:
-        """Decision for a track that left the frame before it was confirmed."""
+        """Decision for a track that left the frame before it was confirmed.
+
+        An unrecognized face that has not finished both passes is dropped, so a glance is
+        not tallied and does not notify. A registered match is still recorded from whatever
+        usable frames were collected.
+        """
         if track.emitted:
             return None
-        usable = [o for o in track.observations if track.last_seen - o.t <= policy.temporal_window_sec and o.label != "LOW_QUALITY"]
+        usable = _usable(track, track.last_seen, policy)
         if not usable:
+            return None
+        if track.unknown_verified_at is not None:
+            return self._second_unknown_pass(track, usable, policy, track.last_seen, closing=True)
+        label, _person, ratio = _majority(usable)
+        if label == "UNKNOWN" and ratio >= policy.temporal_agreement:
             return None
         return self._decide(track, usable, policy, track.last_seen, final=True)
 
-    def _decide(self, track: Track, usable: list[Observation], policy: Policy, now: float, final: bool) -> Optional[Decision]:
+    def _second_unknown_pass(self, track: Track, usable: list[Observation], policy: Policy, now: float, closing: bool) -> Optional[Decision]:
+        """Second look at a face the first pass called unrecognized.
+
+        New frames can still match a registered person. Another full agreeing window of
+        unrecognized observations is what records the face. Disagreement keeps collecting
+        until the person leaves.
+        """
+        second = [o for o in usable if track.unknown_verified_at is not None and o.t > track.unknown_verified_at]
+        if _strong_known(usable, policy):
+            last = usable[-1]
+            known = [o for o in second if o.label == "KNOWN" and o.person_id == last.person_id]
+            if known:
+                return self._decide(track, known, policy, now, final=True, observed=len(usable))
+        if len(second) < policy.temporal_min_frames:
+            return None
+        final = closing or len(second) >= 2 * policy.temporal_min_frames
+        return self._decide(track, second, policy, now, final=final, observed=len(usable))
+
+    def _decide(
+        self,
+        track: Track,
+        usable: list[Observation],
+        policy: Policy,
+        now: float,
+        final: bool,
+        observed: Optional[int] = None,
+    ) -> Optional[Decision]:
         """Majority vote over usable observations. ``final`` routes persistent disagreement to UNCERTAIN."""
-        votes = Counter((o.label, o.person_id if o.label == "KNOWN" else None) for o in usable)
-        (label, person_id), count = votes.most_common(1)[0]
-        ratio = count / len(usable)
+        label, person_id, ratio = _majority(usable)
+        seen = observed if observed is not None else len(usable)
         agreeing = [o for o in usable if o.label == label and (label != "KNOWN" or o.person_id == person_id)]
 
         if ratio >= policy.temporal_agreement:
@@ -299,7 +365,7 @@ class CameraTracker:
                 track.suppressed = True
                 return None
             mean_q = float(np.mean([o.quality for o in agreeing]))
-            return Decision(label, person_id if label == "KNOWN" else None, confidence, mean_q, len(usable))
+            return Decision(label, person_id if label == "KNOWN" else None, confidence, mean_q, seen)
 
         if not final:
             return None
@@ -311,7 +377,7 @@ class CameraTracker:
             None,
             float(np.mean(sims)) if sims else None,
             float(np.mean([o.quality for o in usable])),
-            len(usable),
+            seen,
         )
 
     def _recently_reported_unknown(self, observations: list[Observation], policy: Policy, now: float) -> bool:

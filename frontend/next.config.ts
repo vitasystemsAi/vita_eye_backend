@@ -39,6 +39,9 @@ function devOrigins(): string[] {
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  experimental: {
+    agentUpgrade: 'security',
+  },
   allowedDevOrigins: devOrigins(),
   poweredByHeader: false,
   output: 'standalone',

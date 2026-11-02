@@ -39,7 +39,7 @@ function AlertsView() {
       <PageHeader
         title="Unknown Alerts"
         icon={<ShieldAlert className="h-5 w-5" />}
-        description="Faces that did not match any registered person, or matched with low confidence. Verify in person before taking action."
+        description="Unrecognized faces are listed only after two agreeing verification passes. Uncertain matches still need a person to review them."
         actions={
           notifPerm === 'default' && (
             <Button variant="secondary" icon={<BellRing className="h-4 w-4" />} onClick={() => void Notification.requestPermission().then(setNotifPerm)}>

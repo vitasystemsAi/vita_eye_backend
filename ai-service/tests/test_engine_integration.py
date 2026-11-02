@@ -59,9 +59,11 @@ def test_pipeline_confirms_known_and_unknown_with_temporal_verification(engine):
     assert events[0]["evidenceJpegB64"] is None and events[0]["evidenceFaceJpegB64"] is None
 
     frame_b = decode_image(fixture_bytes("person_b_1.jpg"))
-    results_b = [pipe.process(frame_b, "org", "cam-2", "v1", POLICY, now=200.0 + i) for i in range(3)]
+    results_b = [pipe.process(frame_b, "org", "cam-2", "v1", POLICY, now=200.0 + i) for i in range(6)]
+    assert all(r["events"] == [] and r["faces"][0]["label"] == "PENDING" for r in results_b[:5])
+    assert results_b[5]["faces"][0]["label"] == "UNKNOWN"
     events_b = [e for r in results_b for e in r["events"]]
-    assert len(events_b) == 1 and events_b[0]["eventType"] == "UNKNOWN"
+    assert len(events_b) == 1 and events_b[0]["eventType"] == "UNKNOWN" and events_b[0]["framesObserved"] == 6
     assert events_b[0]["personId"] is None
     scene = decode_image(base64.b64decode(events_b[0]["evidenceJpegB64"]))
     closeup = decode_image(base64.b64decode(events_b[0]["evidenceFaceJpegB64"]))
@@ -70,19 +72,17 @@ def test_pipeline_confirms_known_and_unknown_with_temporal_verification(engine):
     assert engine.detect(closeup), "close-up should still contain a detectable face"
 
 
-def test_unknown_seen_in_one_frame_is_reported_after_leaving(engine):
+def test_unknown_seen_once_is_not_counted_until_double_verified(engine):
     a1, _ = embed(engine, "person_a_1.jpg")
     pipe = _pipeline(engine, [{"personId": "person-A", "modelVersion": engine.model_version, "embedding": a1.tolist()}])
     frame_b = decode_image(fixture_bytes("person_b_1.jpg"))
     blank = np.full(frame_b.shape, 127, dtype=np.uint8)
 
     first = pipe.process(frame_b, "org", "cam-3", "v1", POLICY, now=10.0)
-    assert first["faces"][0]["label"] == "UNKNOWN" and first["events"] == []
+    assert first["faces"][0]["label"] == "PENDING" and first["events"] == []
     later = [pipe.process(blank, "org", "cam-3", "v1", POLICY, now=10.0 + 0.125 * i) for i in range(1, 20)]
     events = [e for r in later for e in r["events"]]
-    assert len(events) == 1 and events[0]["eventType"] == "UNKNOWN" and events[0]["framesObserved"] == 1
-    assert events[0]["timestamp"].startswith("1970-01-01T00:00:10")
-    assert events[0]["evidenceJpegB64"] and events[0]["evidenceFaceJpegB64"]
+    assert events == []
 
 
 def test_blank_frame_produces_no_faces(engine):

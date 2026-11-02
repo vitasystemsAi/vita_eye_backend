@@ -221,7 +221,7 @@ function SettingsPanel() {
     <div className="grid grid-cols-1 gap-6 p-5 lg:grid-cols-2">
       <div className="space-y-2">
         <h3 className="text-sm font-semibold">Alert triggers</h3>
-        <Switch label="Unrecognized person alerts" description="Notify when a face does not match the gallery" checked={d.unknownAlerts} onChange={(v) => set({ unknownAlerts: v })} disabled={!editable} />
+        <Switch label="Unrecognized person alerts" description="Notify after a face stays unrecognized across two verification passes, including today's tally" checked={d.unknownAlerts} onChange={(v) => set({ unknownAlerts: v })} disabled={!editable} />
         <Switch label="Uncertain match alerts" description="Notify for low-confidence matches requiring review" checked={d.uncertainAlerts} onChange={(v) => set({ uncertainAlerts: v })} disabled={!editable} />
         <h3 className="pt-4 text-sm font-semibold">Channels</h3>
         <Switch label="In-app" description="Real-time notification center and toasts" checked={d.channels.inApp} onChange={(v) => set({ channels: { ...d.channels, inApp: v } })} disabled={!editable} />

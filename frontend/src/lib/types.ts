@@ -100,6 +100,8 @@ export interface EventSummary {
   sceneEvidenceId?: string | null;
   evidenceExpired?: boolean;
   createdAt: string;
+  /** Present on a live unrecognized alert: how many double-verified unrecognized faces were counted today. */
+  unrecognizedToday?: number;
 }
 
 export interface EventDetail extends EventSummary {

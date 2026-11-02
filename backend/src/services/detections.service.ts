@@ -9,7 +9,7 @@ import { pageMeta } from '../utils/http';
 import { audit } from './audit.service';
 import type { ConfirmedEvent } from './ai.client';
 import { createEvidenceRow, writeEvidenceFile } from './evidence.service';
-import { notifyForEvent } from './notifications.service';
+import { countUnrecognizedToday, notifyForEvent } from './notifications.service';
 import { assertCameraInScope, cameraScopeWhere } from './scope';
 import { getSettings } from './settings.service';
 import { organizationStorageBytes } from './storageUsage.service';
@@ -139,8 +139,20 @@ export async function recordEvents(organizationId: string, camera: Camera, event
           { model: EventEvidence, as: 'evidence' },
         ],
       });
-      if (full) emitToOrg(organizationId, 'event:new', presentEventSummary(full));
-      void notifyForEvent(event, camera);
+      const unrecognizedToday =
+        event.eventType === 'UNKNOWN'
+          ? await countUnrecognizedToday(organizationId, event.eventTimestamp).catch((err) => {
+              logger.warn({ err, eventId: event.id }, 'Unrecognized tally unavailable');
+              return undefined;
+            })
+          : undefined;
+      if (full) {
+        emitToOrg(organizationId, 'event:new', {
+          ...presentEventSummary(full),
+          ...(unrecognizedToday != null ? { unrecognizedToday } : {}),
+        });
+      }
+      void notifyForEvent(event, camera, unrecognizedToday);
     } catch (err) {
       if (cooldownKey) await redis.del(cooldownKey).catch(() => undefined);
       await Promise.all(files.map(({ file }) => file.cleanup().catch(() => undefined)));

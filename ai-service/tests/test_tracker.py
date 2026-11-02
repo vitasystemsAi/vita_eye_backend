@@ -57,18 +57,56 @@ def test_strong_match_not_instant_when_track_named_another_person():
     assert d is None
 
 
-def test_person_leaving_before_quota_is_still_reported():
+def test_known_leaving_before_quota_is_still_reported():
     tr = CameraTracker()
-    e = unit(7)
-    track, d1 = feed(tr, "UNKNOWN", 0.0, sim=0.05, emb=e)
-    _, d2 = feed(tr, "UNKNOWN", 0.125, sim=0.05, emb=e)
+    track, d1 = feed(tr, "KNOWN", 0.0, "p1", sim=0.5)
+    _, d2 = feed(tr, "KNOWN", 0.125, "p1", sim=0.5)
     assert d1 is None and d2 is None
     assert tr.expire(0.25, P) == []
     gone = tr.expire(5.0, P)
     assert [t.id for t in gone] == [track.id]
     d = tr.finalize(gone[0], P)
-    assert d is not None and d.event_type == "UNKNOWN" and d.frames_observed == 2
+    assert d is not None and d.event_type == "KNOWN" and d.person_id == "p1" and d.frames_observed == 2
     assert tr.finalize(gone[0], P) is None
+
+
+def test_unknown_needs_two_passes_before_it_is_counted():
+    tr = CameraTracker()
+    e = unit(1)
+    first = None
+    for i in range(3):
+        _, d = feed(tr, "UNKNOWN", float(i), sim=0.05, emb=e)
+        first = first or d
+    assert first is None, "the first agreeing pass must not record the face"
+
+    held = None
+    for i in range(3, 5):
+        _, d = feed(tr, "UNKNOWN", float(i), sim=0.05, emb=e)
+        held = held or d
+    assert held is None, "a partial second pass must not record the face"
+
+    _, decision = feed(tr, "UNKNOWN", 5.0, sim=0.05, emb=e)
+    assert decision is not None and decision.event_type == "UNKNOWN" and decision.frames_observed == 6
+
+
+def test_unknown_leaving_before_second_pass_is_not_counted():
+    tr = CameraTracker()
+    e = unit(7)
+    track, _ = feed(tr, "UNKNOWN", 0.0, sim=0.05, emb=e)
+    for i in range(1, 3):
+        feed(tr, "UNKNOWN", i * 0.1, sim=0.05, emb=e)
+    gone = tr.expire(5.0, P)
+    assert [t.id for t in gone] == [track.id]
+    assert tr.finalize(gone[0], P) is None
+
+
+def test_second_pass_can_recognise_a_registered_person():
+    tr = CameraTracker()
+    for i in range(3):
+        _, d = feed(tr, "UNKNOWN", float(i), sim=0.05, emb=unit(3))
+        assert d is None
+    _, decision = feed(tr, "KNOWN", 3.0, "p1", sim=P.known_threshold + 0.15)
+    assert decision is not None and decision.event_type == "KNOWN" and decision.person_id == "p1"
 
 
 def test_leaving_track_with_only_low_quality_frames_is_not_reported():
@@ -122,28 +160,26 @@ def test_disagreement_becomes_uncertain():
     assert decision is not None and decision.event_type == "UNCERTAIN"
 
 
+def _confirm_unknown(tr, t0, emb, box=BOX):
+    decision = None
+    for i in range(6):
+        _, d = feed(tr, "UNKNOWN", t0 + i, sim=0.05, emb=emb, box=box)
+        decision = decision or d
+    return decision
+
+
 def test_unknown_confirmed_then_duplicate_suppressed_by_memory():
     tr = CameraTracker()
     e = unit(1)
-    decision = None
-    for i in range(3):
-        _, d = feed(tr, "UNKNOWN", float(i), sim=0.05, emb=e)
-        decision = decision or d
+    decision = _confirm_unknown(tr, 0.0, e)
     assert decision is not None and decision.event_type == "UNKNOWN"
 
     # Same face re-appears later as a new track (after the old one expired) -> suppressed
-    later = 30.0
-    dup = None
-    for i in range(3):
-        _, d = feed(tr, "UNKNOWN", later + i, sim=0.05, emb=e, box=(400, 300, 80, 80))
-        dup = dup or d
+    dup = _confirm_unknown(tr, 30.0, e, box=(400, 300, 80, 80))
     assert dup is None
 
     # A different unknown face is reported
-    other = None
-    for i in range(3):
-        _, d = feed(tr, "UNKNOWN", 60.0 + i, sim=0.05, emb=unit(2), box=(700, 300, 80, 80))
-        other = other or d
+    other = _confirm_unknown(tr, 60.0, unit(2), box=(700, 300, 80, 80))
     assert other is not None and other.event_type == "UNKNOWN"
 
 

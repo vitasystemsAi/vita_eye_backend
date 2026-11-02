@@ -169,62 +169,79 @@ export function RemotePreview({
   const [hasFrame, setHasFrame] = useState(false);
   const [watching, setWatching] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const seq = useRef(0);
-  const matched = useRef(false);
+  const epoch = useRef(0);
+  const facesKey = useRef('');
 
   const [faces, setFaces] = useState<FrameFace[]>([]);
   const [frameSize, setFrameSize] = useState<[number, number] | null>(null);
 
   const clearFrame = useCallback(() => {
-    seq.current += 1;
+    epoch.current += 1;
     const canvas = canvasRef.current;
     canvas?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
     setHasFrame(false);
     setFaces([]);
     setFrameSize(null);
-    matched.current = false;
+    facesKey.current = '';
   }, []);
 
   useEffect(() => {
     if (!socket || !camera) return;
     const cameraId = camera.id;
+    const epochAtStart = epoch.current;
     let alive = true;
+    let decoding = false;
+    let queued: PreviewFrame | null = null;
+    const stale = () => !alive || epoch.current !== epochAtStart;
     const watch = () => {
       socket.emit('preview:watch', cameraId, (res: { ok?: boolean }) => {
         if (alive) setWatching(Boolean(res?.ok));
       });
     };
-    const onFrame = (payload: PreviewFrame) => {
-      if (!alive || payload.cameraId !== cameraId || !payload.image) return;
-      const marked = Boolean(payload.faces && payload.frameSize);
-      if (!marked && matched.current) return;
+    const pump = () => {
+      if (decoding || !queued || stale()) return;
+      const payload = queued;
+      queued = null;
       const blob = jpegBlob(payload.image);
       if (!blob) return;
-      const ticket = ++seq.current;
+      decoding = true;
       void createImageBitmap(blob).then((bitmap) => {
-        if (!alive || ticket !== seq.current) {
+        decoding = false;
+        if (stale()) {
           bitmap.close();
           return;
         }
         const canvas = canvasRef.current;
         if (!canvas) {
           bitmap.close();
+          pump();
           return;
         }
         if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
           canvas.width = bitmap.width;
           canvas.height = bitmap.height;
         }
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(bitmap, 0, 0);
+        canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
         bitmap.close();
         setHasFrame(true);
         if (payload.faces && payload.frameSize) {
-          matched.current = true;
-          setFaces(payload.faces);
-          setFrameSize(payload.frameSize);
+          const key = payload.faces.map((face) => `${face.trackId}:${face.label}:${face.bbox.join(',')}:${face.personName ?? ''}`).join('|');
+          if (key !== facesKey.current) {
+            facesKey.current = key;
+            setFaces(payload.faces);
+            setFrameSize(payload.frameSize);
+          }
         }
-      }).catch(() => undefined);
+        pump();
+      }).catch(() => {
+        decoding = false;
+        pump();
+      });
+    };
+    const onFrame = (payload: PreviewFrame) => {
+      if (stale() || payload.cameraId !== cameraId || !payload.image) return;
+      queued = payload;
+      pump();
     };
     const onStatus = (payload: { cameraId: string; monitoring: boolean }) => {
       if (!alive || payload.cameraId !== cameraId || payload.monitoring) return;

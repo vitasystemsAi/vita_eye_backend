@@ -85,9 +85,15 @@ function RealtimeAlerts({ toasts = true }: { toasts?: boolean }) {
     playAlert(e.eventType, e.id);
     if (!toasts) return;
     const where = e.camera ? `${e.camera.name} · ${e.camera.location}` : 'Unknown camera';
-    notify(e.eventType === 'UNKNOWN' ? 'error' : 'warning', e.eventType === 'UNKNOWN' ? 'Unrecognized person detected' : 'Uncertain match needs review', `${where}. Verify before taking any action.`);
+    const tally = e.eventType === 'UNKNOWN' && e.unrecognizedToday != null ? ` Unrecognized today: ${e.unrecognizedToday}.` : '';
+    notify(
+      e.eventType === 'UNKNOWN' ? 'error' : 'warning',
+      e.eventType === 'UNKNOWN' ? 'Unrecognized person detected' : 'Uncertain match needs review',
+      e.eventType === 'UNKNOWN' ? `${where}. Confirmed after double verification.${tally}` : `${where}. Verify before taking any action.`,
+    );
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-      const n = new Notification('VITA EYE alert', { body: where, tag: e.id, icon: '/icon-192.png' });
+      const body = e.eventType === 'UNKNOWN' ? `${where}. Confirmed after double verification.${tally}` : where;
+      const n = new Notification('VITA EYE alert', { body, tag: e.id, icon: '/icon-192.png' });
       n.onclick = () => router.push(`/events/${e.id}`);
     }
   });

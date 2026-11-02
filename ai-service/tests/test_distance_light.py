@@ -1,0 +1,51 @@
+import cv2
+import numpy as np
+
+from app.services.face_engine import _compensate_light, _detection_view, _merge_faces
+from app.services.face_engine import DetectedFace
+from app.services.quality import QualityReport
+
+
+def _report(**kwargs) -> QualityReport:
+    base = dict(score=0.3, face_size=48, sharpness=0.2, brightness=0.3, pose_yaw=0.2, detection_score=0.7, issues=["FACE_TOO_SMALL", "TOO_DARK"])
+    base.update(kwargs)
+    return QualityReport(**base)
+
+
+def test_distant_dim_face_is_still_matched():
+    report = _report()
+    assert report.usable(0.5) is False
+    assert report.identifiable(64, 0.85) is True
+
+
+def test_unreliable_landmarks_are_never_matched():
+    report = _report(face_size=120, detection_score=0.95, score=0.8, issues=["LANDMARKS_UNRELIABLE"])
+    assert report.identifiable(64, 0.85) is False
+
+
+def test_tiny_face_is_rejected():
+    assert _report(face_size=24, issues=[]).identifiable(64, 0.85) is False
+
+
+def test_bright_enrollment_crop_is_unchanged():
+    image = np.full((112, 112, 3), 140, np.uint8)
+    assert _compensate_light(image) is image
+
+
+def test_dark_crop_is_lifted_toward_daylight():
+    image = np.full((112, 112, 3), 28, np.uint8)
+    lifted = _compensate_light(image)
+    assert float(cv2.cvtColor(lifted, cv2.COLOR_BGR2GRAY).mean()) > 60
+
+
+def test_bright_frame_skips_detection_enhancement():
+    image = np.full((40, 40, 3), 160, np.uint8)
+    assert _detection_view(image) is image
+
+
+def test_overlapping_distance_pass_does_not_duplicate_a_face():
+    row = np.array([10, 10, 40, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.9], dtype=np.float32)
+    shifted = row.copy()
+    shifted[0] = 14
+    merged = _merge_faces([DetectedFace(row)], [DetectedFace(shifted)])
+    assert len(merged) == 1

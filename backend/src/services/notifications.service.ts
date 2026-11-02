@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { redis } from '../config/redis';
 import { Camera, DetectionEvent, Notification, Role, User, UserDevice } from '../models';
+import { resolveTenant } from './tenancy.service';
 import type { NotificationChannel } from '../models/Notification';
 import { enqueueNotification } from '../jobs/queues';
 import { emitToUser } from '../sockets/emitter';
@@ -96,11 +97,51 @@ async function createAndDispatch(
   return created;
 }
 
+/** Midnight at the start of `at` in an IANA time zone, as a UTC instant. */
+function startOfZonedDay(timeZone: string, at: Date): Date {
+  let zone = timeZone || 'UTC';
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: zone });
+  } catch {
+    zone = 'UTC';
+  }
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(at)
+      .map((p) => [p.type, p.value]),
+  );
+  const hour = Number(parts.hour) === 24 ? 0 : Number(parts.hour);
+  const year = Number(parts.year);
+  const month = Number(parts.month);
+  const day = Number(parts.day);
+  const zonedAsUtc = Date.UTC(year, month - 1, day, hour, Number(parts.minute), Number(parts.second));
+  const offsetMs = zonedAsUtc - at.getTime();
+  return new Date(Date.UTC(year, month - 1, day) - offsetMs);
+}
+
+/** Unrecognized faces recorded today, including `at`. Only double-verified events are stored. */
+export async function countUnrecognizedToday(organizationId: string, at: Date): Promise<number> {
+  const tenant = await resolveTenant(organizationId);
+  const from = startOfZonedDay(tenant?.timezone || 'UTC', at);
+  return DetectionEvent.count({
+    where: { organizationId, eventType: 'UNKNOWN', eventTimestamp: { [Op.gte]: from } },
+  });
+}
+
 /**
  * Called after a detection event has been committed. Never throws: notification problems must
  * not affect the persisted event.
  */
-export async function notifyForEvent(event: DetectionEvent, camera: Camera) {
+export async function notifyForEvent(event: DetectionEvent, camera: Camera, unrecognizedToday?: number) {
   try {
     const settings = await getSettings(event.organizationId);
     const n = settings.notifications;
@@ -122,10 +163,20 @@ export async function notifyForEvent(event: DetectionEvent, camera: Camera) {
     if (!channels.length) return;
 
     const recipients = await recipientsFor(event.organizationId, n.recipientRoles, camera.site);
-    const label = event.eventType === 'UNKNOWN' ? 'Unknown person detected' : 'Uncertain detection requires review';
+    let tally: number | undefined;
+    if (event.eventType === 'UNKNOWN') {
+      try {
+        tally = unrecognizedToday ?? (await countUnrecognizedToday(event.organizationId, event.eventTimestamp));
+      } catch (err) {
+        logger.warn({ err, eventId: event.id }, 'Unrecognized tally unavailable; notification will omit the count');
+      }
+    }
+    const label = event.eventType === 'UNKNOWN' ? 'Unrecognized person confirmed' : 'Uncertain detection requires review';
     const when = event.eventTimestamp.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
     const title = `${label} — ${camera.cameraName}`;
-    const message = `${label} at ${camera.location}${camera.site ? ` (${camera.site})` : ''} on ${when}. Event ID: ${event.id}. Review: ${eventLink(event.id)}`;
+    const verified = event.eventType === 'UNKNOWN' ? ' Confirmed after double verification.' : '';
+    const countLine = tally != null ? ` Unrecognized today: ${tally}.` : '';
+    const message = `${label} at ${camera.location}${camera.site ? ` (${camera.site})` : ''} on ${when}.${verified}${countLine} Event ID: ${event.id}. Review: ${eventLink(event.id)}`;
     await createAndDispatch(recipients.map((u) => u.id), event.id, channels, title, message);
   } catch (err) {
     logger.error({ err, eventId: event.id }, 'Notification orchestration failed (event remains persisted)');

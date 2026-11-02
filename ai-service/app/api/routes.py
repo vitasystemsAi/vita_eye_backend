@@ -18,6 +18,8 @@ log = logging.getLogger("vita.api")
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_internal_token)])
 
 ENROLL_MIN_QUALITY = 0.6
+ENROLL_MIN_FACE = 96
+ENROLL_MIN_DETECTION = 0.8
 
 
 def _read_upload(upload: UploadFile) -> bytes:
@@ -62,7 +64,12 @@ def enroll_embed(request: Request, image: UploadFile = File(...), policy: str | 
             if a1 > 0.22 * a0:
                 _reject("Multiple faces detected; only the enrolled person may be in the image", ["MULTIPLE_FACES"])
         face = faces[0]
-        aligned, q = engine.analyse(img, face, pol.min_face_size, pol.min_detection_score)
+        aligned, q = engine.analyse(
+            img,
+            face,
+            max(pol.min_face_size, ENROLL_MIN_FACE),
+            max(pol.min_detection_score, ENROLL_MIN_DETECTION),
+        )
         threshold = max(pol.min_quality, ENROLL_MIN_QUALITY)
         if q.issues or q.score < threshold:
             reasons = list(q.issues) or ["LOW_QUALITY_SCORE"]

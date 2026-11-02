@@ -94,7 +94,7 @@ class RecognitionPipeline:
             analysed = []
             for f in faces:
                 aligned, q = self.engine.analyse(img, f, policy.min_face_size, policy.min_detection_score)
-                ok = q.usable(policy.min_quality)
+                ok = q.identifiable(policy.min_face_size, policy.min_detection_score)
                 emb = self.engine.embed_aligned(aligned) if ok else None
                 analysed.append((f, q, ok, emb))
 
@@ -173,6 +173,10 @@ class RecognitionPipeline:
                     events.append(self._event(track, decision, now, policy))
 
                 display, disp_person, disp_sim = track.display_label()
+                # The live box stays on "Verifying" until both unrecognized passes agree.
+                # That is the moment the face is counted and a notification is sent.
+                if display == "UNKNOWN" and not track.emitted:
+                    display = "PENDING"
                 if display != "KNOWN":
                     disp_person = None
                 face_results.append(

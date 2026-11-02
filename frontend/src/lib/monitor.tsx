@@ -11,8 +11,9 @@ import type { Camera, FrameAck, FrameFace } from './types';
 const SESSION_KEY = 'vita.monitor.session';
 const PENDING_STOP_KEY = 'vita.monitor.pendingStop';
 const LOCK_NAME = 'vita-eye-monitor';
-const MAX_WIDTH = 960;
-const JPEG_QUALITY = 0.8;
+// 1280 matches the detector's working size. A 960-wide grab made distant faces too small on every browser camera.
+const MAX_WIDTH = 1280;
+const JPEG_QUALITY = 0.86;
 const ACK_TIMEOUT_MS = 15_000;
 const STOP_TIMEOUT_MS = 6_000;
 const SCHEDULE_RETRY_MS = 15_000;

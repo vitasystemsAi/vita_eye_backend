@@ -27,8 +27,8 @@ os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stime
 MAX_BACKOFF_SEC = 60
 HEARTBEAT_SEC = 20
 GALLERY_POLL_SEC = 60
-PREVIEW_MAX_EDGE = 720
-PREVIEW_INTERVAL_SEC = 0.1
+PREVIEW_MAX_EDGE = 960
+PREVIEW_INTERVAL_SEC = 0.08
 PREVIEW_PROBE_SEC = 1.0
 
 
@@ -46,7 +46,7 @@ def preview_jpeg(frame, faces: list[dict]) -> Optional[tuple[bytes, list[int], l
     image = frame
     if scale < 1:
         image = cv2.resize(frame, (max(1, round(width * scale)), max(1, round(height * scale))), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 48])
+    ok, buf = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 58])
     if not ok:
         return None
     scaled: list[dict] = []
@@ -106,6 +106,8 @@ class StreamWorker(threading.Thread):
         self._preview_viewers = 0
         self._last_preview = 0.0
         self._preview_busy = threading.Lock()
+        self._marks: list[dict] = []
+        self._marks_lock = threading.Lock()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -244,7 +246,8 @@ class StreamWorker(threading.Thread):
             return
         self.frames_processed += 1
         self.last_frame_at = now
-        self._publish_matched(frame, result.get("faces") or [], now)
+        with self._marks_lock:
+            self._marks = list(result.get("faces") or [])
         if result["events"]:
             try:
                 self.backend.post_detections(
@@ -258,28 +261,25 @@ class StreamWorker(threading.Thread):
             except Exception as exc:  # noqa: BLE001
                 log.error("Camera %s: failed to deliver %d event(s): %s", self.cfg.camera_id, len(result["events"]), exc)
 
-    def _publish_latest(self, _frame, now: float) -> None:
-        """Ask whether anyone is watching. The picture itself is sent with its own face boxes."""
-        if self._preview_viewers > 0:
-            return
-        if now - self._last_preview < PREVIEW_PROBE_SEC:
-            return
-        self._last_preview = now
-        self._preview_viewers = self.backend.post_preview(self.cfg.camera_id, self.cfg.organization_id)
-
-    def _publish_matched(self, frame, faces: list[dict], now: float) -> None:
-        """Send the recognized frame and the boxes measured on that same frame."""
+    def _publish_latest(self, frame, now: float) -> None:
+        """Send the newest picture on a steady clock. Face boxes update when recognition finishes."""
         if self._preview_viewers <= 0:
+            if now - self._last_preview < PREVIEW_PROBE_SEC:
+                return
+            self._last_preview = now
+            self._preview_viewers = self.backend.post_preview(self.cfg.camera_id, self.cfg.organization_id)
             return
         if now - self._last_preview < PREVIEW_INTERVAL_SEC:
             return
         if not self._preview_busy.acquire(blocking=False):
             return
         self._last_preview = now
+        with self._marks_lock:
+            marks = [dict(face) for face in self._marks]
 
-        def send(img=frame, marks=list(faces)) -> None:
+        def send(img=frame, overlay=marks) -> None:
             try:
-                encoded = preview_jpeg(img, marks)
+                encoded = preview_jpeg(img, overlay)
                 if encoded is None:
                     return
                 jpeg, size, scaled = encoded

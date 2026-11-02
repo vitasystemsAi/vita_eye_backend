@@ -309,8 +309,11 @@ def _frame_ok(cap) -> bool:
 
 
 def _open_rtsp(url: str):
-    for options in ("rtsp_transport;tcp|stimeout;4000000", "rtsp_transport;udp|stimeout;4000000"):
-        cap = _opencv_capture(url, options)
+    """TCP first. Low-delay flags keep the live picture from sitting in FFmpeg's queue."""
+    live = "stimeout;5000000|max_delay;0|fflags;nobuffer|flags;low_delay"
+    transports = ("tcp",) if urlparse(url).scheme == "rtsps" else ("tcp", "udp")
+    for transport in transports:
+        cap = _opencv_capture(url, f"rtsp_transport;{transport}|{live}")
         if _frame_ok(cap):
             return cap, url, None
         cap.release()

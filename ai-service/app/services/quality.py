@@ -28,6 +28,22 @@ class QualityReport:
     def usable(self, min_quality: float) -> bool:
         return not (set(self.issues) & HARD_ISSUES) and self.score >= min_quality
 
+    def identifiable(self, min_face_size: int, min_detection_score: float) -> bool:
+        """A live camera may still match this face.
+
+        Enrollment keeps the strict ``usable`` gate. Distance and low light often miss that
+        bar while the landmarks are still good enough for a similarity decision.
+        """
+        if "LANDMARKS_UNRELIABLE" in self.issues:
+            return False
+        if self.face_size < max(32, int(min_face_size * 0.5)):
+            return False
+        # Never demand more detector confidence than the organization asked for, and never
+        # let a strict enrollment-style cutoff throw away a clear but distant face.
+        if self.detection_score < min(0.62, min_detection_score):
+            return False
+        return True
+
     def to_dict(self) -> dict:
         return {
             "score": round(self.score, 4),

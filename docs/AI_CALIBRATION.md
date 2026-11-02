@@ -35,11 +35,14 @@ simply someone without a matching registration, not an intruder.
    produces an event only after `temporalMinFrames` usable observations inside
    `temporalWindowSec`, and only if at least `temporalAgreement` of them agree. A track that keeps
    disagreeing is emitted once as `UNCERTAIN` for human review. Each track emits at most one event.
-   Two fast paths keep fast-moving people from escaping: a single observation whose similarity is
-   at least `knownThreshold + 0.12` confirms a `KNOWN` match immediately, and a track that leaves
-   the view before reaching `temporalMinFrames` is finalised from the usable observations it has
-   (`framesObserved` on the event shows how many). Tracks expire after max(1.5 s, 2.5 frame
-   intervals), so these events arrive within ~1.5 s of the person leaving.
+   Two fast paths keep a registered person from escaping: a single observation whose similarity is
+   at least `knownThreshold + 0.12` confirms a `KNOWN` match immediately, and a registered match
+   that leaves the view before reaching `temporalMinFrames` is finalised from the usable
+   observations it has (`framesObserved` on the event shows how many). An unrecognized face is
+   recorded only after a second agreeing pass of `temporalMinFrames` new frames. That second
+   pass can still recognise a registered person. A face that leaves before both passes finish is
+   not counted and does not notify. The notification includes how many unrecognized faces were
+   confirmed today. Tracks expire after max(1.5 s, 2.5 frame intervals).
 7. **Duplicate suppression** – a registered person is not re-reported on the same camera within
    `knownCooldownSec`; an unrecognized face that matches one reported within `unknownCooldownSec`
    counts as the same event. Alerts per camera are additionally limited by `alertCooldownSec`.
