@@ -14,12 +14,12 @@ import { useAuth } from '@/lib/auth';
 import { ROLE_LABELS } from '@/lib/format';
 import { SocketProvider, useSocket, useSocketEvent } from '@/lib/socket';
 import type { EventSummary } from '@/lib/types';
-import { NAV } from './nav';
+import { NAV, navLabel } from './nav';
 import { NotificationBell } from './NotificationBell';
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
-  const { can, hasFeature } = useAuth();
+  const { can, hasFeature, user } = useAuth();
   const sections = ['Operations', 'Management', 'Administration'] as const;
   return (
     <nav className="flex h-full flex-col">
@@ -28,7 +28,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       </div>
       <div className="flex-1 space-y-6 overflow-y-auto px-3 pb-6">
         {sections.map((section) => {
-          const items = NAV.filter((n) => n.section === section && can(n.permission) && hasFeature(n.feature));
+          const items = NAV.filter((n) => n.section === section && can(n.permission) && (!n.feature || hasFeature(n.feature)));
           if (!items.length) return null;
           return (
             <div key={section}>
@@ -48,7 +48,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                         )}
                       >
                         <Icon className="h-4 w-4 shrink-0" />
-                        {item.label}
+                        {navLabel(item, user?.organization?.organizationType)}
                       </Link>
                     </li>
                   );
@@ -157,8 +157,8 @@ function useFeatureGuard() {
   const pathname = usePathname();
   const router = useRouter();
   const current = NAV.find((n) => pathname === n.href || pathname.startsWith(`${n.href}/`));
-  const blocked = Boolean(user && current && !hasFeature(current.feature));
-  const fallback = NAV.find((n) => can(n.permission) && hasFeature(n.feature))?.href;
+  const blocked = Boolean(user && current?.feature && !hasFeature(current.feature));
+  const fallback = NAV.find((n) => can(n.permission) && (!n.feature || hasFeature(n.feature)))?.href;
   useEffect(() => {
     if (blocked && fallback && fallback !== current?.href) router.replace(fallback);
   }, [blocked, fallback, current?.href, router]);

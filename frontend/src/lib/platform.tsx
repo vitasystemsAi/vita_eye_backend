@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { PLATFORM_SESSION_EXPIRED_EVENT, api } from './api';
-import type { Camera, FeatureKey, OrganizationStatus, RoleName } from './types';
+import type { Camera, FeatureKey, OrganizationStatus, OrganizationTypeCode, RoleName } from './types';
 
 export interface PlatformAdmin {
   id: string;
@@ -46,6 +46,11 @@ export interface PlatformOrganization {
   subscriptionPlan: string | null;
   cameraLimit: number | null;
   storageLimitBytes: number | null;
+  organizationType: OrganizationTypeCode;
+  organizationTypeLabel: string;
+  capacity: number | null;
+  capacityUnit: string;
+  capacityLabel: string;
   contactName: string | null;
   contactEmail: string | null;
   contactPhone: string | null;

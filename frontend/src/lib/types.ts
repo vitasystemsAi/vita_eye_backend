@@ -19,7 +19,9 @@ export type Permission =
   | 'users:manage'
   | 'audit:view'
   | 'settings:view'
-  | 'settings:manage';
+  | 'settings:manage'
+  | 'premises:view'
+  | 'premises:manage';
 
 export interface PageMeta {
   page: number;
@@ -55,6 +57,10 @@ export type FeatureKey =
   | 'settings'
   | 'auditLogs';
 
+export type OrganizationTypeCode = 'OFFICE' | 'HOSTEL' | 'HOME' | 'SCHOOL' | 'HOSPITAL' | 'OTHER';
+export type MasterKind = 'workforce' | 'lodging' | 'layout' | 'none';
+export type BedStatus = 'AVAILABLE' | 'OCCUPIED' | 'RESERVED' | 'MAINTENANCE';
+
 export type OrganizationStatus = 'PROVISIONING' | 'PENDING' | 'ACTIVE' | 'SUSPENDED' | 'ON_HOLD' | 'DEACTIVATED' | 'ARCHIVED' | 'FAILED';
 export type RetentionMode = 'DRY_RUN' | 'ENFORCE';
 
@@ -68,7 +74,17 @@ export interface CurrentUser {
   siteScope: string[] | null;
   /** Platform admin email when this is a "view as" session opened from the platform console. */
   impersonatedBy: string | null;
-  organization: { id: string; name: string; status: OrganizationStatus; detectionRetentionDays: number | null } | null;
+  organization: {
+    id: string;
+    name: string;
+    status: OrganizationStatus;
+    detectionRetentionDays: number | null;
+    organizationType: OrganizationTypeCode;
+    organizationTypeLabel: string;
+    capacity: number | null;
+    capacityUnit: string;
+    capacityLabel: string;
+  } | null;
 }
 
 export type EventType = 'KNOWN' | 'UNKNOWN' | 'UNCERTAIN';

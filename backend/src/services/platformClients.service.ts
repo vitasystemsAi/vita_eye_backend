@@ -5,6 +5,7 @@ import { logger } from '../config/logger';
 import { DEFAULT_SETTINGS } from '../config/defaultSettings';
 import { FEATURE_KEYS, enabledFeatures, featureCatalog as catalog, type FeatureKey } from '../config/features';
 import { PLANS, isPlanCode, planCatalog, planSelectionErrors, type PlanCode } from '../config/plans';
+import { isAllowedCapacity, isOrganizationType, organizationTypeCatalog, organizationTypeOf, type OrganizationTypeCode } from '../config/organizationTypes';
 import {
   AppSetting,
   AuditLog,
@@ -39,6 +40,7 @@ import { presentCamera } from './cameras.service';
 import { rememberClientAdmin } from './clientCredentials.service';
 import { emailConfigured, escapeHtml, sendEmail } from './email.service';
 import { stopTenantStreams } from './ingestion.service';
+import { assertProfileChange } from './premises.service';
 import { platformAudit } from './platformAuth.service';
 import { roleById, roleByName } from './rbac.service';
 import { organizationStorageBytes } from './storageUsage.service';
@@ -67,6 +69,8 @@ export interface RegisterOrganizationInput {
   retentionMode: RetentionMode;
   cameraLimit?: number | null;
   storageLimitBytes?: number | null;
+  organizationType: OrganizationTypeCode;
+  capacity: number;
   admin: { name: string; email: string };
 }
 
@@ -84,6 +88,8 @@ export interface UpdateOrganizationInput {
   retentionMode?: RetentionMode;
   cameraLimit?: number | null;
   storageLimitBytes?: number | null;
+  organizationType?: OrganizationTypeCode;
+  capacity?: number;
 }
 
 const RESET_MINUTES = 30;
@@ -120,6 +126,7 @@ function assertSelection(plan: PlanCode, input: { features: string[]; detectionR
 }
 
 export function presentOrganization(org: Organization) {
+  const kind = organizationTypeOf(org.organizationType);
   return {
     id: org.id,
     name: org.name,
@@ -136,6 +143,11 @@ export function presentOrganization(org: Organization) {
     subscriptionPlan: org.subscriptionPlan,
     cameraLimit: org.cameraLimit ?? null,
     storageLimitBytes: org.storageLimitBytes ?? null,
+    organizationType: kind.code,
+    organizationTypeLabel: kind.label,
+    capacity: org.capacity ?? null,
+    capacityUnit: kind.capacityUnit,
+    capacityLabel: kind.capacityLabel,
     contactName: org.contactName,
     contactEmail: org.contactEmail,
     contactPhone: org.contactPhone,
@@ -153,6 +165,10 @@ export function featureCatalog() {
 
 export function subscriptionPlans() {
   return planCatalog();
+}
+
+export function organizationTypes() {
+  return organizationTypeCatalog();
 }
 
 async function findOrganization(id: string) {
@@ -403,6 +419,8 @@ export async function registerOrganization(input: RegisterOrganizationInput, act
     contactName: input.contactName ?? null,
     contactEmail,
     contactPhone: input.contactPhone ?? null,
+    organizationType: input.organizationType,
+    capacity: input.capacity,
     createdByPlatformAdmin: actor.admin.id,
     pendingAdminName: input.admin.name,
     pendingAdminEmail: email,
@@ -644,15 +662,18 @@ export async function updateOrganization(id: string, input: UpdateOrganizationIn
   if (input.contactEmail && input.contactEmail.toLowerCase() !== org.contactEmail && (await Organization.findOne({ where: { contactEmail: input.contactEmail.toLowerCase(), id: { [Op.ne]: id } } }))) {
     throw AppError.conflict('This organization email is already in use');
   }
-  const planCode = input.subscriptionPlan ?? (org.subscriptionPlan && isPlanCode(org.subscriptionPlan) ? org.subscriptionPlan : null);
-  const features = input.features ?? [...enabledFeatures(org.features)];
-  const retentionDays = input.detectionRetentionDays ?? org.detectionRetentionDays ?? 30;
-  const cameraLimit = input.cameraLimit !== undefined ? input.cameraLimit : (org.cameraLimit ?? null);
-  const storageLimitBytes = input.storageLimitBytes !== undefined ? input.storageLimitBytes : (org.storageLimitBytes ?? null);
-  if (planCode) assertSelection(planCode, { features, detectionRetentionDays: retentionDays, cameraLimit, storageLimitBytes });
-  else {
-    const unsupported = catalog().filter((feature) => !feature.supported && features.includes(feature.key));
-    if (unsupported.length) throw AppError.validation(unsupported.map((feature) => ({ path: 'features', message: `${feature.label} is not available in this deployment` })));
+  const touchesPlan = input.subscriptionPlan !== undefined || input.features !== undefined || input.detectionRetentionDays !== undefined || input.cameraLimit !== undefined || input.storageLimitBytes !== undefined;
+  if (touchesPlan) {
+    const planCode = input.subscriptionPlan ?? (org.subscriptionPlan && isPlanCode(org.subscriptionPlan) ? org.subscriptionPlan : null);
+    const features = input.features ?? [...enabledFeatures(org.features)];
+    const retentionDays = input.detectionRetentionDays ?? org.detectionRetentionDays ?? 30;
+    const cameraLimit = input.cameraLimit !== undefined ? input.cameraLimit : (org.cameraLimit ?? null);
+    const storageLimitBytes = input.storageLimitBytes !== undefined ? input.storageLimitBytes : (org.storageLimitBytes ?? null);
+    if (planCode) assertSelection(planCode, { features, detectionRetentionDays: retentionDays, cameraLimit, storageLimitBytes });
+    else {
+      const unsupported = catalog().filter((feature) => !feature.supported && features.includes(feature.key));
+      if (unsupported.length) throw AppError.validation(unsupported.map((feature) => ({ path: 'features', message: `${feature.label} is not available in this deployment` })));
+    }
   }
 
   const changes: Partial<Organization> = {};
@@ -669,6 +690,16 @@ export async function updateOrganization(id: string, input: UpdateOrganizationIn
   if (input.retentionMode !== undefined) changes.retentionMode = input.retentionMode;
   if (input.cameraLimit !== undefined) changes.cameraLimit = input.cameraLimit;
   if (input.storageLimitBytes !== undefined) changes.storageLimitBytes = input.storageLimitBytes;
+  if (input.organizationType !== undefined || input.capacity !== undefined) {
+    const nextType = input.organizationType ?? (isOrganizationType(org.organizationType) ? org.organizationType : 'OTHER');
+    const nextCapacity = input.capacity !== undefined ? input.capacity : (org.capacity ?? null);
+    if (nextCapacity != null && !isAllowedCapacity(nextType, nextCapacity)) {
+      throw AppError.validation([{ path: 'capacity', message: 'Choose a capacity listed for this organization type' }]);
+    }
+    if (READABLE.has(org.status)) await runInTenant(id, () => assertProfileChange(id, nextType, nextCapacity));
+    if (input.organizationType !== undefined) changes.organizationType = input.organizationType;
+    if (input.capacity !== undefined) changes.capacity = input.capacity;
+  }
 
   const before = presentOrganization(org);
   await org.update(changes);

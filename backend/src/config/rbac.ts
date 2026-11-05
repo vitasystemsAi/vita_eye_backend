@@ -18,6 +18,8 @@ export const PERMISSIONS = {
   'audit:view': 'View audit logs',
   'settings:view': 'View system settings and health',
   'settings:manage': 'Modify recognition, retention and system settings',
+  'premises:view': 'View organization master data such as floors, rooms, beds and employee types',
+  'premises:manage': 'Create and edit organization master data',
 } as const;
 
 export type Permission = keyof typeof PERMISSIONS;
@@ -61,6 +63,7 @@ export const ROLES: Record<RoleName, { description: string; permissions: Permiss
       'users:view',
       'audit:view',
       'settings:view',
+      'premises:view',
     ],
   },
   PREVIEW: {

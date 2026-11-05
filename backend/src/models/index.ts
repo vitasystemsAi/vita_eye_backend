@@ -11,6 +11,7 @@ import { Notification } from './Notification';
 import { AppSetting, AuditLog } from './AuditLog';
 import { ClientCredential, OrganizationHold, PasswordResetRequest, PlatformAdmin, PlatformAuditLog, ProvisioningJob, RetentionCleanupRun, TenantUserDirectory } from './Platform';
 import { RetentionCleanupLog } from './RetentionLog';
+import { Bed, Department, EmployeeType, Floor, Room } from './Premises';
 
 Role.belongsToMany(Permission, { through: RolePermission, foreignKey: 'roleId', otherKey: 'permissionId', as: 'permissions' });
 Permission.belongsToMany(Role, { through: RolePermission, foreignKey: 'permissionId', otherKey: 'roleId', as: 'roles' });
@@ -40,6 +41,11 @@ Notification.belongsTo(DetectionEvent, { foreignKey: 'eventId', as: 'event' });
 
 AuditLog.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
+Floor.hasMany(Room, { foreignKey: 'floorId', as: 'rooms' });
+Room.belongsTo(Floor, { foreignKey: 'floorId', as: 'floor' });
+Room.hasMany(Bed, { foreignKey: 'roomId', as: 'beds' });
+Bed.belongsTo(Room, { foreignKey: 'roomId', as: 'room' });
+
 /**
  * Organization data lives in the organization's own database. These models resolve their schema
  * from the tenant context on every query, so `tenant_db`.`table` is emitted while shared reference
@@ -60,6 +66,11 @@ const TENANT_MODELS: Array<ModelStatic<Model>> = [
   AuditLog,
   AppSetting,
   RetentionCleanupLog,
+  Floor,
+  Room,
+  Bed,
+  EmployeeType,
+  Department,
 ];
 for (const model of TENANT_MODELS) {
   Object.defineProperty(model, '_schema', {
@@ -97,4 +108,9 @@ export {
   PasswordResetRequest,
   RetentionCleanupRun,
   RetentionCleanupLog,
+  Floor,
+  Room,
+  Bed,
+  EmployeeType,
+  Department,
 };

@@ -101,6 +101,7 @@ export default function ClientsPage() {
                     <tr key={org.id} className="align-top hover:bg-ink-800/40">
                       <td className="table-cell">
                         <Link href={`/platform/clients/${org.id}`} className="font-medium text-ink-100 hover:text-brand-300">{org.name}</Link>
+                        <p className="text-xs text-ink-400">{org.organizationTypeLabel}{org.capacity ? ` · ${org.capacity.toLocaleString()} ${org.capacityUnit}` : ''}</p>
                         {org.approachingLimit && <p className="text-xs text-amber-300">Approaching a limit</p>}
                       </td>
                       <td className="table-cell font-mono text-xs">{org.code ?? '—'}</td>

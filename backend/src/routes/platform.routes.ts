@@ -14,6 +14,7 @@ r.post('/auth/reset-password', authLimiter, c.resetPassword);
 r.use(authenticatePlatform);
 r.get('/features', c.features);
 r.get('/plans', c.plans);
+r.get('/organization-types', c.organizationTypes);
 r.get('/dashboard', c.dashboard);
 r.get('/organizations', c.listClients);
 r.post('/organizations', sensitiveLimiter, c.register);

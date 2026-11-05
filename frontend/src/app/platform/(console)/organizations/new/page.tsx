@@ -8,6 +8,7 @@ import { FeatureChecklist, RetentionPicker, SetupSummary, planByCode } from '@/c
 import { Button, Card, ErrorBanner, Field, Input, LoadingBlock, Modal, PageHeader, Select } from '@/components/ui/primitives';
 import { api, ApiError, errorMessage } from '@/lib/api';
 import { useApi } from '@/lib/hooks';
+import type { OrganizationTypeInfo } from '@/lib/premises';
 import type { FeatureInfo, PlanInfo, PlatformOrganization, SetupLink } from '@/lib/platform';
 import type { FeatureKey } from '@/lib/types';
 
@@ -23,13 +24,17 @@ export default function RegisterOrganizationPage() {
   const router = useRouter();
   const featuresQuery = useApi<FeatureInfo[]>('/platform/features');
   const plansQuery = useApi<PlanInfo[]>('/platform/plans');
+  const typesQuery = useApi<OrganizationTypeInfo[]>('/platform/organization-types');
   const catalog = featuresQuery.data;
   const plans = plansQuery.data;
+  const organizationTypes = typesQuery.data;
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [contactName, setContactName] = useState('');
   const [contactEmail, setContactEmail] = useState('');
   const [contactPhone, setContactPhone] = useState('');
+  const [organizationType, setOrganizationType] = useState('OFFICE');
+  const [capacity, setCapacity] = useState('');
   const [timezone, setTimezone] = useState('UTC');
   const [plan, setPlan] = useState('PROFESSIONAL');
   const [features, setFeatures] = useState<FeatureKey[]>([]);
@@ -47,6 +52,7 @@ export default function RegisterOrganizationPage() {
 
   const selected = useMemo(() => planByCode(plans, plan), [plans, plan]);
   const allowed = selected?.features;
+  const typeInfo = organizationTypes?.find((item) => item.code === organizationType);
 
   useEffect(() => {
     if (allowed) setFeatures(allowed);
@@ -56,6 +62,11 @@ export default function RegisterOrganizationPage() {
       setStorageGb(selected.storageLimitBytes ? String(Math.round(selected.storageLimitBytes / 1024 ** 3)) : '');
     }
   }, [allowed, selected]);
+
+  useEffect(() => {
+    if (!typeInfo) return;
+    if (!typeInfo.capacities.map(String).includes(capacity)) setCapacity(String(typeInfo.capacities[0]));
+  }, [typeInfo, capacity]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -69,6 +80,8 @@ export default function RegisterOrganizationPage() {
         contactEmail,
         contactPhone,
         timezone,
+        organizationType,
+        capacity: Number(capacity),
         subscriptionPlan: plan,
         features,
         detectionRetentionDays: retention,
@@ -87,8 +100,8 @@ export default function RegisterOrganizationPage() {
     }
   }
 
-  if ((featuresQuery.loading && !catalog) || (plansQuery.loading && !plans)) return <LoadingBlock />;
-  if (!catalog || !plans) return <ErrorBanner error={featuresQuery.error ?? plansQuery.error} onRetry={() => { void featuresQuery.reload(); void plansQuery.reload(); }} />;
+  if ((featuresQuery.loading && !catalog) || (plansQuery.loading && !plans) || (typesQuery.loading && !organizationTypes)) return <LoadingBlock />;
+  if (!catalog || !plans || !organizationTypes) return <ErrorBanner error={featuresQuery.error ?? plansQuery.error ?? typesQuery.error} onRetry={() => { void featuresQuery.reload(); void plansQuery.reload(); void typesQuery.reload(); }} />;
 
   return (
     <>
@@ -99,6 +112,18 @@ export default function RegisterOrganizationPage() {
             <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
               <Field label="Organization name" error={errors.name}><Input value={name} onChange={(e) => setName(e.target.value)} maxLength={160} /></Field>
               <Field label="Organization code" error={errors.code} hint="Unique, used in reports. Example: acme"><Input value={code} onChange={(e) => setCode(e.target.value)} maxLength={32} /></Field>
+              <Field label="Organization type" error={errors.organizationType} hint={typeInfo?.description}>
+                <Select value={organizationType} onChange={(e) => setOrganizationType(e.target.value)}>
+                  {organizationTypes.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+                </Select>
+              </Field>
+              <Field label={typeInfo?.capacityLabel ?? 'Capacity'} error={errors.capacity} hint={typeInfo ? `Licensed ${typeInfo.capacityUnit} for this organization. The administrator builds master data up to this limit.` : undefined}>
+                <Select value={capacity} onChange={(e) => setCapacity(e.target.value)}>
+                  {(typeInfo?.capacities ?? []).map((value) => (
+                    <option key={value} value={value}>{value.toLocaleString()} {typeInfo?.capacityUnit}</option>
+                  ))}
+                </Select>
+              </Field>
               <Field label="Organization email" error={errors.contactEmail}><Input type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} /></Field>
               <Field label="Contact number" error={errors.contactPhone}><Input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} /></Field>
               <Field label="Contact name" error={errors.contactName}><Input value={contactName} onChange={(e) => setContactName(e.target.value)} /></Field>
@@ -152,7 +177,7 @@ export default function RegisterOrganizationPage() {
             <div className="space-y-4 p-5 text-sm text-ink-300">
               <p className="flex items-start gap-2"><Database className="mt-0.5 h-4 w-4 shrink-0 text-brand-400" />A dedicated MySQL database is created and migrated. The organization stays inactive until that succeeds. A failure can be retried without creating a second organization.</p>
               {submitError && <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-200">{submitError}</p>}
-              <Button type="submit" className="w-full" loading={submitting} icon={<Sparkles className="h-4 w-4" />}>{submitting ? 'Creating database…' : 'Register and provision'}</Button>
+              <Button type="submit" className="w-full" loading={submitting} disabled={!capacity} icon={<Sparkles className="h-4 w-4" />}>{submitting ? 'Creating database…' : 'Register and provision'}</Button>
             </div>
           </Card>
         </div>

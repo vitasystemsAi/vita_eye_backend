@@ -65,6 +65,10 @@ export async function plans(_req: Request, res: Response) {
   ok(res, clients.subscriptionPlans());
 }
 
+export async function organizationTypes(_req: Request, res: Response) {
+  ok(res, clients.organizationTypes());
+}
+
 export async function dashboard(req: Request, res: Response) {
   const query = parse(dashboardQuerySchema, req.query);
   const to = query.to ?? new Date();

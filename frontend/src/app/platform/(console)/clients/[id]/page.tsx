@@ -12,11 +12,12 @@ import { api, ApiError, errorMessage } from '@/lib/api';
 import { fmtBytes, fmtDateTime, fmtRelative, humanize, ROLE_LABELS } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { openClientConsole, type ClientDetail, type FeatureInfo, type PlanInfo, type PlatformOrganization } from '@/lib/platform';
+import type { OrganizationTypeCode, OrganizationTypeInfo } from '@/lib/premises';
 import type { FeatureKey } from '@/lib/types';
 
 const READY = new Set(['ACTIVE', 'SUSPENDED', 'ON_HOLD', 'DEACTIVATED', 'ARCHIVED']);
 
-function PlanEditor({ org, catalog, plans, onSaved }: { org: PlatformOrganization; catalog: FeatureInfo[]; plans: PlanInfo[]; onSaved: (o: PlatformOrganization) => void }) {
+function PlanEditor({ org, catalog, plans, types, onSaved }: { org: PlatformOrganization; catalog: FeatureInfo[]; plans: PlanInfo[]; types: OrganizationTypeInfo[]; onSaved: (o: PlatformOrganization) => void }) {
   const notify = useToast();
   const [draft, setDraft] = useState({
     name: org.name,
@@ -32,17 +33,33 @@ function PlanEditor({ org, catalog, plans, onSaved }: { org: PlatformOrganizatio
     retentionMode: org.retentionMode ?? 'ENFORCE',
     cameraLimit: org.cameraLimit ? String(org.cameraLimit) : '',
     storageGb: org.storageLimitBytes ? String(Math.round(org.storageLimitBytes / 1024 ** 3)) : '',
+    organizationType: org.organizationType || 'OTHER',
+    capacity: org.capacity ? String(org.capacity) : '',
   });
   const [saving, setSaving] = useState(false);
   const allowed = planByCode(plans, draft.subscriptionPlan)?.features;
 
+  const chosenType = types.find((item) => item.code === draft.organizationType);
+
+  function chooseType(code: OrganizationTypeCode) {
+    const next = types.find((item) => item.code === code);
+    const stillValid = next?.capacities.map(String).includes(draft.capacity);
+    setDraft({ ...draft, organizationType: code, capacity: stillValid ? draft.capacity : String(next?.capacities[0] ?? '') });
+  }
+
   async function save() {
+    if (draft.capacity && chosenType && !chosenType.capacities.map(String).includes(draft.capacity)) {
+      notify('error', 'Not saved', 'Choose a capacity listed for this organization type.');
+      return;
+    }
     setSaving(true);
     try {
+      const { storageGb, capacity: capacityText, cameraLimit, ...rest } = draft;
       const { data } = await api.patch<PlatformOrganization>(`/platform/organizations/${org.id}`, {
-        ...draft,
-        cameraLimit: draft.cameraLimit ? Number(draft.cameraLimit) : null,
-        storageLimitBytes: draft.storageGb ? Math.round(Number(draft.storageGb) * 1024 ** 3) : null,
+        ...rest,
+        cameraLimit: cameraLimit ? Number(cameraLimit) : null,
+        storageLimitBytes: storageGb ? Math.round(Number(storageGb) * 1024 ** 3) : null,
+        ...(capacityText ? { capacity: Number(capacityText) } : {}),
       });
       onSaved(data);
       notify('success', 'Organization updated', 'Feature and retention changes apply immediately.');
@@ -67,6 +84,19 @@ function PlanEditor({ org, catalog, plans, onSaved }: { org: PlatformOrganizatio
           <Field label="Phone"><Input value={draft.contactPhone} onChange={(e) => setDraft({ ...draft, contactPhone: e.target.value })} /></Field>
           <Field label="Contact"><Input value={draft.contactName} onChange={(e) => setDraft({ ...draft, contactName: e.target.value })} /></Field>
           <Field label="Time zone"><Input value={draft.timezone} onChange={(e) => setDraft({ ...draft, timezone: e.target.value })} /></Field>
+          <Field label="Organization type" hint={chosenType?.description}>
+            <Select value={draft.organizationType} onChange={(e) => chooseType(e.target.value as OrganizationTypeCode)}>
+              {types.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
+            </Select>
+          </Field>
+          <Field label={chosenType?.capacityLabel ?? 'Capacity'}>
+            <Select value={draft.capacity} onChange={(e) => setDraft({ ...draft, capacity: e.target.value })}>
+              {!draft.capacity && <option value="">Not set</option>}
+              {(chosenType?.capacities ?? []).map((value) => (
+                <option key={value} value={value}>{value.toLocaleString()} {chosenType?.capacityUnit}</option>
+              ))}
+            </Select>
+          </Field>
           <Field label="Plan">
             <Select value={draft.subscriptionPlan} onChange={(e) => setDraft({ ...draft, subscriptionPlan: e.target.value })}>
               {plans.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
@@ -95,6 +125,7 @@ export default function ClientDetailPage() {
   const { data, loading, error, reload, setData } = useApi<ClientDetail>(`/platform/organizations/${id}`);
   const { data: catalog } = useApi<FeatureInfo[]>('/platform/features');
   const { data: plans } = useApi<PlanInfo[]>('/platform/plans');
+  const { data: types } = useApi<OrganizationTypeInfo[]>('/platform/organization-types');
   const [resetOpen, setResetOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [opening, setOpening] = useState<string | null>(null);
@@ -230,6 +261,8 @@ export default function ClientDetailPage() {
           <Card title="Overview">
             <div className="p-5">
               <KeyValue items={[
+                ['Type', org.organizationTypeLabel],
+                ['Capacity', org.capacity ? `${org.capacity.toLocaleString()} ${org.capacityUnit}` : null],
                 ['Plan', org.subscriptionPlan],
                 ['Database', org.databaseName],
                 ['Time zone', org.timezone],
@@ -276,9 +309,9 @@ export default function ClientDetailPage() {
         </div>
       </div>
 
-      {catalog && plans && ready && (
+      {catalog && plans && types && ready && (
         <div className="mt-6" id="plan">
-          <PlanEditor key={org.updatedAt} org={org} catalog={catalog} plans={plans} onSaved={setOrg} />
+          <PlanEditor key={org.updatedAt} org={org} catalog={catalog} plans={plans} types={types} onSaved={setOrg} />
         </div>
       )}
 

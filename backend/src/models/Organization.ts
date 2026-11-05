@@ -1,5 +1,6 @@
 import { CreationOptional, DataTypes, InferAttributes, InferCreationAttributes, Model } from 'sequelize';
 import { sequelize } from '../config/database';
+import { ORGANIZATION_TYPE_CODES, type OrganizationTypeCode } from '../config/organizationTypes';
 import type { RetentionMode } from '../utils/retentionPolicy';
 
 export type OrganizationStatus =
@@ -33,6 +34,9 @@ export class Organization extends Model<InferAttributes<Organization>, InferCrea
   declare subscriptionPlan: CreationOptional<string | null>;
   declare cameraLimit: CreationOptional<number | null>;
   declare storageLimitBytes: CreationOptional<number | null>;
+  declare organizationType: CreationOptional<OrganizationTypeCode>;
+  /** Licensed size for the organization type: beds, employees, residents, students or people. */
+  declare capacity: CreationOptional<number | null>;
   declare contactName: CreationOptional<string | null>;
   declare contactEmail: CreationOptional<string | null>;
   declare contactPhone: CreationOptional<string | null>;
@@ -71,6 +75,8 @@ Organization.init(
         return value == null ? null : Number(value);
       },
     },
+    organizationType: { type: DataTypes.ENUM(...ORGANIZATION_TYPE_CODES), allowNull: false, defaultValue: 'OTHER' },
+    capacity: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
     contactName: { type: DataTypes.STRING(120), allowNull: true },
     contactEmail: { type: DataTypes.STRING(255), allowNull: true },
     contactPhone: { type: DataTypes.STRING(40), allowNull: true },

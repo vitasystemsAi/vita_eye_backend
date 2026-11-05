@@ -5,6 +5,7 @@ import { clientIp, ok } from '../utils/http';
 import { forgotPasswordSchema, loginSchema, resetPasswordSchema } from '../validators/auth.validators';
 import { COOKIE_REFRESH, authOf, clearSessionCookies, setSessionCookies } from '../middleware/auth';
 import { issueCsrfCookie } from '../middleware/csrf';
+import { organizationTypeOf } from '../config/organizationTypes';
 import { Organization } from '../models';
 import { runInTenant } from '../services/tenancy.service';
 import { AppError } from '../utils/errors';
@@ -21,7 +22,19 @@ async function presentUser(ctx: AuthContext) {
     features: [...ctx.features].sort(),
     siteScope: ctx.siteScope,
     impersonatedBy: ctx.impersonatedBy,
-    organization: org ? { id: org.id, name: org.name, status: org.status, detectionRetentionDays: org.detectionRetentionDays } : null,
+    organization: org
+      ? {
+          id: org.id,
+          name: org.name,
+          status: org.status,
+          detectionRetentionDays: org.detectionRetentionDays,
+          organizationType: organizationTypeOf(org.organizationType).code,
+          organizationTypeLabel: organizationTypeOf(org.organizationType).label,
+          capacity: org.capacity ?? null,
+          capacityUnit: organizationTypeOf(org.organizationType).capacityUnit,
+          capacityLabel: organizationTypeOf(org.organizationType).capacityLabel,
+        }
+      : null,
   };
 }
 

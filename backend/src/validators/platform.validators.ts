@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { FEATURE_KEYS } from '../config/features';
+import { ORGANIZATION_TYPE_CODES, isAllowedCapacity } from '../config/organizationTypes';
 import { PLAN_CODES } from '../config/plans';
 import { isValidTimeZone } from '../utils/retentionPolicy';
 
@@ -28,6 +29,8 @@ const optionalEmail = z
   .nullable()
   .transform((v) => (v === undefined ? undefined : v || null));
 const optionalLimit = z.union([z.null(), z.coerce.number().int().min(1).max(10_000_000_000_000)]).optional();
+const organizationType = z.enum(ORGANIZATION_TYPE_CODES);
+const capacity = z.coerce.number().int().positive();
 
 export const registerOrganizationSchema = z.object({
   name: z.string().trim().min(2).max(160),
@@ -47,6 +50,12 @@ export const registerOrganizationSchema = z.object({
     name: z.string().trim().min(2).max(120),
     email: z.string().trim().toLowerCase().email().max(255),
   }),
+  organizationType,
+  capacity,
+}).superRefine((value, ctx) => {
+  if (!isAllowedCapacity(value.organizationType, value.capacity)) {
+    ctx.addIssue({ code: 'custom', path: ['capacity'], message: 'Choose a capacity listed for this organization type' });
+  }
 });
 
 export const updateOrganizationSchema = z
@@ -64,8 +73,15 @@ export const updateOrganizationSchema = z
     retentionMode: z.enum(['DRY_RUN', 'ENFORCE']).optional(),
     cameraLimit: optionalLimit,
     storageLimitBytes: optionalLimit,
+    organizationType: organizationType.optional(),
+    capacity: capacity.optional(),
   })
-  .refine((v) => Object.values(v).some((x) => x !== undefined), { message: 'No changes supplied' });
+  .refine((v) => Object.values(v).some((x) => x !== undefined), { message: 'No changes supplied' })
+  .superRefine((value, ctx) => {
+    if (value.organizationType && value.capacity != null && !isAllowedCapacity(value.organizationType, value.capacity)) {
+      ctx.addIssue({ code: 'custom', path: ['capacity'], message: 'Choose a capacity listed for this organization type' });
+    }
+  });
 
 export const accountSchema = z.object({
   action: z.enum(['ACTIVATE', 'SUSPEND', 'HOLD', 'REACTIVATE', 'DEACTIVATE', 'ARCHIVE']),
