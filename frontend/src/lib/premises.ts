@@ -81,6 +81,21 @@ export interface PremisesOverview {
   bedStatuses: BedStatus[];
 }
 
+export interface PremisesImportSummary {
+  floorsCreated: number;
+  floorsReused: number;
+  roomsCreated: number;
+  roomsReused: number;
+  bedsCreated: number;
+  bedsSkipped: number;
+  message: string;
+}
+
+export interface PremisesImportResult {
+  overview: PremisesOverview;
+  summary: PremisesImportSummary;
+}
+
 export const BED_STATUS_LABELS: Record<BedStatus, string> = {
   AVAILABLE: 'Available',
   OCCUPIED: 'Occupied',

@@ -2,6 +2,7 @@
 
 import { BedDouble, Building2, Pencil, Plus, Trash2, Users } from 'lucide-react';
 import { useState, type FormEvent, type MouseEvent, type ReactNode } from 'react';
+import { PremisesImport } from '@/components/premises/PremisesImport';
 import { Badge, Button, Card, EmptyState, Field, Input, Select } from '@/components/ui/primitives';
 import { cn } from '@/components/ui/cn';
 import { api, ApiError, errorMessage } from '@/lib/api';
@@ -89,6 +90,7 @@ export function PremisesBoard({ data, canManage, onUpdated }: { data: PremisesOv
           <Departments data={data} canManage={canManage} onUpdated={onUpdated} />
         </div>
       )}
+      {places && canManage && <PremisesImport lodging={profile.master === 'lodging'} onUpdated={onUpdated} />}
       {places && (
         <div className={cn('grid grid-cols-1 gap-6', profile.master === 'lodging' ? 'xl:grid-cols-3' : 'xl:grid-cols-2')}>
           <Floors

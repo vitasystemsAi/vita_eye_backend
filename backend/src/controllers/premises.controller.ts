@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
 import { authOf } from '../middleware/auth';
+import * as premisesImport from '../services/premisesImport.service';
 import * as premises from '../services/premises.service';
-import { parse } from '../utils/errors';
+import { AppError, parse } from '../utils/errors';
 import { clientIp, ok } from '../utils/http';
 import {
   createBedSchema,
@@ -86,4 +87,17 @@ export async function updateDepartment(req: Request, res: Response) {
 
 export async function deleteDepartment(req: Request, res: Response) {
   ok(res, await premises.deleteDepartment(authOf(req), idOf(req), actor(req)));
+}
+
+export async function downloadPremisesTemplate(req: Request, res: Response) {
+  const file = await premisesImport.templateFor(authOf(req));
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(file.body);
+}
+
+export async function importPremisesFile(req: Request, res: Response) {
+  if (!req.file) throw AppError.badRequest('Choose the filled spreadsheet to import.');
+  ok(res, await premisesImport.importPremises(authOf(req), req.file.buffer, req.file.originalname || 'premises.xlsx', actor(req)));
 }

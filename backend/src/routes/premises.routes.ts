@@ -1,6 +1,12 @@
 import { Router } from 'express';
+import multer from 'multer';
 import * as premises from '../controllers/premises.controller';
 import { authenticate, requirePermission } from '../middleware/auth';
+
+const spreadsheet = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024, files: 1 },
+});
 
 const r = Router();
 
@@ -9,6 +15,8 @@ r.use(authenticate, requirePermission('premises:view'));
 r.get('/', premises.overview);
 
 const manage = requirePermission('premises:manage');
+r.get('/import/template', manage, premises.downloadPremisesTemplate);
+r.post('/import', manage, spreadsheet.single('file'), premises.importPremisesFile);
 r.post('/floors', manage, premises.createFloor);
 r.patch('/floors/:id', manage, premises.updateFloor);
 r.delete('/floors/:id', manage, premises.deleteFloor);
