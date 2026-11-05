@@ -105,7 +105,7 @@ export const FEATURES = {
     category: 'Detection',
     supported: true,
     legalNote: 'Enable only where face recognition is legally permitted and a lawful basis is recorded.',
-    permissions: ['persons:view', 'persons:manage', 'persons:enroll', 'persons:delete'],
+    permissions: ['persons:view', 'persons:manage', 'persons:enroll', 'persons:delete', 'data:export', 'data:import', 'faces:export', 'faces:import'],
   },
   licensePlateRecognition: {
     label: 'License Plate Recognition',

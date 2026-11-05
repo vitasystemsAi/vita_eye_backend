@@ -1,13 +1,15 @@
 import crypto from 'node:crypto';
 import { Op, type WhereOptions } from 'sequelize';
+import { exceedsCapacity, organizationTypeOf } from '../config/organizationTypes';
 import { logger } from '../config/logger';
-import { AuditLog, FaceTemplate, RegisteredPerson, User, sequelize } from '../models';
+import { AuditLog, FaceTemplate, Organization, RegisteredPerson, User, sequelize } from '../models';
 import { cipher } from '../utils/cipher';
 import { AppError } from '../utils/errors';
 import { pageMeta } from '../utils/http';
 import { embedFace, policyFrom, type EmbedResult } from './ai.client';
 import { audit } from './audit.service';
 import { bumpGalleryVersion, loadGallery, templateAad } from './gallery.service';
+import { dot, identityScore } from './identityMatch';
 import { getSettings } from './settings.service';
 import { syncPolicyToStreams } from './ingestion.service';
 import type { AuthContext } from '../types/auth';
@@ -119,11 +121,36 @@ export async function getPerson(ctx: AuthContext, id: string) {
   };
 }
 
+async function assertHostelTenant(
+  organizationId: string,
+  input: { referenceId?: string; department?: string | null },
+  adding: number,
+) {
+  const org = await Organization.findByPk(organizationId);
+  if (!org || organizationTypeOf(org.organizationType).master !== 'tenants') return;
+  const details: Array<{ path: string; message: string }> = [];
+  if (input.referenceId !== undefined && !/^\d{10}$/.test(input.referenceId)) {
+    details.push({ path: 'referenceId', message: 'Enter a 10-digit mobile number' });
+  }
+  if (input.department !== undefined && !input.department?.trim()) {
+    details.push({ path: 'department', message: 'Room number is required' });
+  }
+  if (details.length) throw AppError.validation(details);
+  if (adding > 0 && org.capacity != null) {
+    const used = await RegisteredPerson.count({ where: { organizationId } });
+    if (exceedsCapacity(org.capacity, used, adding)) {
+      const remaining = Math.max(0, org.capacity - used);
+      throw AppError.conflict(`This exceeds the tenant capacity of ${org.capacity}. ${remaining} ${remaining === 1 ? 'tenant' : 'tenants'} remaining.`);
+    }
+  }
+}
+
 export async function createPerson(
   ctx: AuthContext,
   input: { personName: string; referenceId: string; department?: string | null; status?: PersonStatus },
   ip: string | null,
 ) {
+  await assertHostelTenant(ctx.organizationId, { referenceId: input.referenceId, department: input.department ?? '' }, 1);
   return sequelize.transaction(async (transaction) => {
     // A soft-deleted record (biometrics already removed) may still hold this reference ID: purge it.
     const stale = await RegisteredPerson.findOne({
@@ -151,6 +178,10 @@ export async function updatePerson(
   input: Partial<{ personName: string; referenceId: string; department: string | null; status: PersonStatus }>,
   ip: string | null,
 ) {
+  const patch: { referenceId?: string; department?: string | null } = {};
+  if (input.referenceId !== undefined) patch.referenceId = input.referenceId;
+  if (input.department !== undefined) patch.department = input.department;
+  await assertHostelTenant(ctx.organizationId, patch, 0);
   const p = await findPerson(ctx, id);
   const from = p.status;
   const statusChanged = input.status !== undefined && input.status !== from;
@@ -388,41 +419,6 @@ export async function deletePerson(ctx: AuthContext, id: string, ip: string | nu
   });
   await galleryChanged(ctx.organizationId);
   return { deleted: true };
-}
-
-function dot(a: number[], b: number[]): number {
-  let s = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) s += a[i] * b[i];
-  return s;
-}
-
-/** Matches ai-service gallery.fuse_identity_score: centroid first, outlier templates ignored. */
-const OUTLIER_GAP = 0.12;
-
-function identityScore(probe: number[], templates: Array<{ embedding: number[]; quality: number }>): number {
-  if (!templates.length || !probe.length) return -1;
-  const dim = probe.length;
-  const centroid = new Array<number>(dim).fill(0);
-  let weightSum = 0;
-  let templateMax = -1;
-  for (const t of templates) {
-    const weight = Math.max(0.25, Math.min(1, t.quality));
-    weightSum += weight;
-    for (let i = 0; i < dim; i++) centroid[i] += (t.embedding[i] ?? 0) * weight;
-    templateMax = Math.max(templateMax, dot(probe, t.embedding));
-  }
-  if (weightSum <= 0) return templateMax;
-  let norm = 0;
-  for (let i = 0; i < dim; i++) {
-    centroid[i] /= weightSum;
-    norm += centroid[i] * centroid[i];
-  }
-  norm = Math.sqrt(norm) || 1;
-  let centroidSim = 0;
-  for (let i = 0; i < dim; i++) centroidSim += probe[i] * (centroid[i] / norm);
-  if (templateMax <= centroidSim + OUTLIER_GAP) return 0.8 * centroidSim + 0.2 * templateMax;
-  return centroidSim;
 }
 
 function round(n: number) {

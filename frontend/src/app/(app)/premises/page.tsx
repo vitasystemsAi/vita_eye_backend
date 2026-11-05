@@ -10,6 +10,7 @@ import type { PremisesOverview } from '@/lib/premises';
 
 function titleFor(data: PremisesOverview) {
   if (data.profile.master === 'workforce') return 'Workforce';
+  if (data.profile.master === 'tenants') return 'Tenants';
   if (data.profile.code === 'HOME') return 'Home layout';
   if (data.profile.code === 'SCHOOL') return 'Campus';
   if (data.profile.master === 'lodging') return 'Floors, rooms and beds';
@@ -27,7 +28,11 @@ function MasterData() {
       <PageHeader
         title={titleFor(data)}
         icon={<Building2 className="h-5 w-5" />}
-        description={`${data.profile.label} master data. Licensed ${data.profile.capacityLabel.toLowerCase()} is set by the platform when the organization is registered.`}
+        description={
+          data.profile.master === 'tenants'
+            ? 'Hostel tenants. Add a name, mobile number and room number, then register the face. Licensed tenant capacity is set by the platform.'
+            : `${data.profile.label} master data. Licensed ${data.profile.capacityLabel.toLowerCase()} is set by the platform when the organization is registered.`
+        }
       />
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard label={data.profile.capacityLabel} value={data.profile.capacity?.toLocaleString() ?? '—'} sub={data.profile.capacityUnit} icon={<Building2 className="h-5 w-5" />} />

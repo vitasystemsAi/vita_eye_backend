@@ -13,8 +13,8 @@ import { api, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import type { Person, PersonDetail } from '@/lib/types';
 
-function Steps({ step }: { step: 1 | 2 | 3 }) {
-  const items = ['Person details', 'Face capture & consent', 'Done'];
+function Steps({ step, tenant }: { step: 1 | 2 | 3; tenant: boolean }) {
+  const items = tenant ? ['Tenant details', 'Face capture & consent', 'Done'] : ['Person details', 'Face capture & consent', 'Done'];
   return (
     <ol className="mb-6 flex flex-wrap gap-2">
       {items.map((label, i) => (
@@ -29,7 +29,8 @@ function Steps({ step }: { step: 1 | 2 | 3 }) {
 function NewPersonView() {
   const router = useRouter();
   const notify = useToast();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
+  const tenant = user?.organization?.organizationType === 'HOSTEL';
   const [person, setPerson] = useState<PersonDetail | null>(null);
   const [done, setDone] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
@@ -51,9 +52,13 @@ function NewPersonView() {
   return (
     <>
       <PageHeader
-        title="Register a person"
+        title={tenant ? 'Register a tenant' : 'Register a person'}
         icon={<UserPlus className="h-5 w-5" />}
-        description="Create the registration record, then capture a clear, aligned face. Monitoring uses that enrollment and will not show this name on a different person."
+        description={
+          tenant
+            ? 'Save the tenant’s name, mobile number and room number, then capture a clear, aligned face. Monitoring uses that enrollment and will not show this name on a different person.'
+            : 'Create the registration record, then capture a clear, aligned face. Monitoring uses that enrollment and will not show this name on a different person.'
+        }
         actions={
           <>
             {person && !done && (
@@ -69,11 +74,12 @@ function NewPersonView() {
           </>
         }
       />
-      <Steps step={done ? 3 : person ? 2 : 1} />
+      <Steps step={done ? 3 : person ? 2 : 1} tenant={tenant} />
       {!person && (
-        <Card title="Person details">
+        <Card title={tenant ? 'Tenant details' : 'Person details'}>
           <div className="p-5">
             <PersonForm
+              variant={tenant ? 'tenant' : 'person'}
               submitLabel="Save and continue"
               onSubmit={async (v) => {
                 const { data } = await api.post<Person>('/persons', { ...v, department: v.department || null });
@@ -92,7 +98,7 @@ function NewPersonView() {
       {person && !done && (
         <Card
           title={`Enroll face — ${person.personName}`}
-          description={`Reference ${person.referenceId}`}
+          description={tenant ? `Mobile ${person.referenceId} · room ${person.department ?? '—'}` : `Reference ${person.referenceId}`}
           actions={
             <>
               <Button variant="danger" size="sm" onClick={() => setConfirmCancel(true)}>
@@ -104,7 +110,7 @@ function NewPersonView() {
             </>
           }
         >
-          <div className="p-5">
+          <div className="p-3 sm:p-5">
             <EnrollmentPanel
               person={person}
               onEnrolled={(p) => {

@@ -2,7 +2,7 @@ export const ORGANIZATION_TYPE_CODES = ['OFFICE', 'HOSTEL', 'HOME', 'SCHOOL', 'H
 export type OrganizationTypeCode = (typeof ORGANIZATION_TYPE_CODES)[number];
 
 /** Which master-data catalog the organization admin maintains. */
-export type MasterKind = 'workforce' | 'lodging' | 'layout' | 'none';
+export type MasterKind = 'workforce' | 'lodging' | 'layout' | 'tenants' | 'none';
 
 export const BED_STATUSES = ['AVAILABLE', 'OCCUPIED', 'RESERVED', 'MAINTENANCE'] as const;
 export type BedStatus = (typeof BED_STATUSES)[number];
@@ -25,14 +25,6 @@ export interface OrganizationTypeDefinition {
   roomCapacityLabel: string | null;
   roomTypes: readonly RoomTypeDefinition[];
 }
-
-const HOSTEL_ROOMS: readonly RoomTypeDefinition[] = [
-  { code: 'SINGLE', label: 'Single', defaultCapacity: 1 },
-  { code: 'DOUBLE', label: 'Double', defaultCapacity: 2 },
-  { code: 'TRIPLE', label: 'Triple', defaultCapacity: 3 },
-  { code: 'DORM', label: 'Dormitory', defaultCapacity: 8 },
-  { code: 'SUITE', label: 'Suite', defaultCapacity: 2 },
-];
 
 const HOSPITAL_ROOMS: readonly RoomTypeDefinition[] = [
   { code: 'WARD', label: 'Ward', defaultCapacity: 6 },
@@ -72,13 +64,13 @@ export const ORGANIZATION_TYPES: Record<OrganizationTypeCode, OrganizationTypeDe
   HOSTEL: {
     code: 'HOSTEL',
     label: 'Hostel',
-    description: 'A residential hostel. Capacity is the number of beds. The organization admin adds floors, rooms and beds up to that limit.',
-    capacityUnit: 'beds',
-    capacityLabel: 'Bed capacity',
+    description: 'A residential hostel. Capacity is the number of tenants. The organization admin adds each tenant with a name, mobile number and room number, then registers their face.',
+    capacityUnit: 'tenants',
+    capacityLabel: 'Tenant capacity',
     capacities: [20, 50, 100, 200, 350, 500, 1000, 2000],
-    master: 'lodging',
-    roomCapacityLabel: 'Maximum beds',
-    roomTypes: HOSTEL_ROOMS,
+    master: 'tenants',
+    roomCapacityLabel: null,
+    roomTypes: [],
   },
   HOME: {
     code: 'HOME',

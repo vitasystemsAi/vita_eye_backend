@@ -49,7 +49,10 @@ RegisteredPerson.init(
   { sequelize, tableName: 'registered_persons', paranoid: true },
 );
 
-/** Encrypted biometric template. `encryptedEmbedding` must never leave the backend except to the AI service. */
+/**
+ * Encrypted biometric template. Plaintext embeddings are decrypted only for the AI service
+ * and while an admin export seals them under a passphrase. API responses never include them.
+ */
 export class FaceTemplate extends Model<InferAttributes<FaceTemplate>, InferCreationAttributes<FaceTemplate>> {
   declare id: CreationOptional<string>;
   declare registeredPersonId: string;

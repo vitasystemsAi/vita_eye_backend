@@ -171,6 +171,27 @@ export async function downloadFile(path: string, query: Query, fallbackName: str
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** Downloads a file produced by a POST (the body can carry a passphrase that must not sit in the URL). */
+export async function downloadBlob(path: string, body: unknown, fallbackName: string) {
+  const send = async () => {
+    const headers: Record<string, string> = { Accept: '*/*', 'Content-Type': 'application/json', 'X-CSRF-Token': await ensureCsrf() };
+    return fetch(`${BASE}${path}`, { method: 'POST', headers, credentials: 'same-origin', cache: 'no-store', body: JSON.stringify(body) });
+  };
+  let res = await send();
+  if (res.status === 401 && (await refreshSession())) res = await send();
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, json?.error?.code ?? 'HTTP_ERROR', json?.error?.message ?? 'Download failed', json?.error?.details);
+  }
+  const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? fallbackName;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export function errorMessage(err: unknown): string {
   if (err instanceof ApiError) return err.message;
   if (err instanceof Error) return err.message;

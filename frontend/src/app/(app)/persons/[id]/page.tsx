@@ -21,7 +21,8 @@ function PersonDetailView() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const notify = useToast();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
+  const tenant = user?.organization?.organizationType === 'HOSTEL';
   const { data: p, error, loading, reload, setData } = useApi<PersonDetail>(`/persons/${id}`);
   const events = useApi<EventSummary[]>(can('events:view') ? '/events' : null, { personId: id, pageSize: 10 });
   const [editing, setEditing] = useState(false);
@@ -77,7 +78,8 @@ function PersonDetailView() {
         icon={<UserRound className="h-5 w-5" />}
         description={
           <span className="inline-flex flex-wrap items-center gap-2">
-            <span className="font-mono">{p.referenceId}</span>
+            <span className="font-mono">{tenant ? `Mobile ${p.referenceId}` : p.referenceId}</span>
+            {tenant && <span>Room {p.department ?? '—'}</span>}
             <PersonStatusBadge status={p.status} />
             <EnrollmentBadge status={p.enrollmentStatus} />
           </span>
@@ -144,7 +146,7 @@ function PersonDetailView() {
           <div className="p-5">
             <KeyValue
               items={[
-                ['Department', p.department ?? '—'],
+                [tenant ? 'Room number' : 'Department', p.department ?? '—'],
                 ['Status since', fmtDateTime(p.statusChangedAt)],
                 ['Registered', fmtDateTime(p.createdAt)],
                 ['Legal basis', p.legalBasis ? humanize(p.legalBasis) : 'Not recorded'],
@@ -203,6 +205,7 @@ function PersonDetailView() {
 
       <Modal open={editing} onClose={() => setEditing(false)} title="Edit registration">
         <PersonForm
+          variant={tenant ? 'tenant' : 'person'}
           initial={{ personName: p.personName, referenceId: p.referenceId, department: p.department ?? '', status: p.status }}
           submitLabel="Save changes"
           onCancel={() => setEditing(false)}

@@ -13,7 +13,7 @@ import {
   type OrganizationTypeCode,
   type OrganizationTypeDefinition,
 } from '../config/organizationTypes';
-import { Bed, Department, EmployeeType, Floor, Organization, Room, sequelize } from '../models';
+import { Bed, Department, EmployeeType, Floor, Organization, RegisteredPerson, Room, sequelize } from '../models';
 import type { AuthContext } from '../types/auth';
 import { AppError } from '../utils/errors';
 import { audit } from './audit.service';
@@ -58,6 +58,10 @@ async function allocatedSeats(organizationId: string, exceptId?: string, transac
   return rows.filter((row) => row.id !== exceptId).reduce((sum, row) => sum + (row.seatLimit ?? 0), 0);
 }
 
+async function tenantCount(organizationId: string) {
+  return RegisteredPerson.count({ where: { organizationId } });
+}
+
 async function committed(organizationId: string, master: MasterKind) {
   if (master === 'lodging') {
     const [beds, planned] = await Promise.all([Bed.count({ where: { organizationId } }), allocatedRooms(organizationId)]);
@@ -65,11 +69,13 @@ async function committed(organizationId: string, master: MasterKind) {
   }
   if (master === 'layout') return allocatedRooms(organizationId);
   if (master === 'workforce') return allocatedSeats(organizationId);
+  if (master === 'tenants') return tenantCount(organizationId);
   return 0;
 }
 
 async function masterCount(organizationId: string, master: MasterKind) {
   if (master === 'lodging' || master === 'layout') return Floor.count({ where: { organizationId } });
+  if (master === 'tenants') return tenantCount(organizationId);
   if (master === 'workforce') {
     const [types, departments] = await Promise.all([
       EmployeeType.count({ where: { organizationId } }),
@@ -138,12 +144,13 @@ function requireCode(code: string | null | undefined) {
 export async function overview(ctx: AuthContext) {
   const { org, type } = await load(ctx);
   const organizationId = org.id;
-  const [floors, rooms, beds, employeeTypes, departments] = await Promise.all([
+  const [floors, rooms, beds, employeeTypes, departments, tenants] = await Promise.all([
     Floor.findAll({ where: { organizationId }, order: [['sortOrder', 'ASC'], ['name', 'ASC']] }),
     Room.findAll({ where: { organizationId }, order: [['name', 'ASC']] }),
     Bed.findAll({ where: { organizationId }, order: [['label', 'ASC']] }),
     EmployeeType.findAll({ where: { organizationId }, order: [['sortOrder', 'ASC'], ['name', 'ASC']] }),
     Department.findAll({ where: { organizationId }, order: [['name', 'ASC']] }),
+    type.master === 'tenants' ? RegisteredPerson.count({ where: { organizationId } }) : Promise.resolve(0),
   ]);
   const floorName = new Map(floors.map((floor) => [floor.id, floor.name]));
   const roomCount = new Map<string, number>();
@@ -154,7 +161,7 @@ export async function overview(ctx: AuthContext) {
   const roomFloor = new Map(rooms.map((room) => [room.id, room.floorId]));
   const planned = rooms.reduce((sum, room) => sum + room.capacity, 0);
   const seats = departments.reduce((sum, row) => sum + (row.seatLimit ?? 0), 0);
-  const used = type.master === 'lodging' ? beds.length : type.master === 'layout' ? planned : type.master === 'workforce' ? seats : 0;
+  const used = type.master === 'lodging' ? beds.length : type.master === 'layout' ? planned : type.master === 'workforce' ? seats : type.master === 'tenants' ? tenants : 0;
   const capacity = org.capacity ?? null;
   return {
     profile: {

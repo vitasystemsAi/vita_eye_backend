@@ -18,8 +18,12 @@ export const PERMISSIONS = {
   'audit:view': 'View audit logs',
   'settings:view': 'View system settings and health',
   'settings:manage': 'Modify recognition, retention and system settings',
-  'premises:view': 'View organization master data such as floors, rooms, beds and employee types',
+  'premises:view': 'View organization master data such as tenants, floors, rooms, beds and employee types',
   'premises:manage': 'Create and edit organization master data',
+  'data:export': 'Export the people directory without biometric data',
+  'data:import': 'Import people from a spreadsheet. Existing faces are left unchanged.',
+  'faces:export': 'Export stored faces as a passphrase-encrypted package',
+  'faces:import': 'Import a facial package or enroll faces from a folder of photos',
 } as const;
 
 export type Permission = keyof typeof PERMISSIONS;
@@ -59,6 +63,7 @@ export const ROLES: Record<RoleName, { description: string; permissions: Permiss
       'cameras:view',
       'events:view',
       'events:export',
+      'data:export',
       'notifications:view',
       'users:view',
       'audit:view',

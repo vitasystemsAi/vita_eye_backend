@@ -3,6 +3,7 @@
 import { BedDouble, Building2, Pencil, Plus, Trash2, Users } from 'lucide-react';
 import { useState, type FormEvent, type MouseEvent, type ReactNode } from 'react';
 import { PremisesImport } from '@/components/premises/PremisesImport';
+import { TenantBoard } from '@/components/premises/TenantBoard';
 import { Badge, Button, Card, EmptyState, Field, Input, Select } from '@/components/ui/primitives';
 import { cn } from '@/components/ui/cn';
 import { api, ApiError, errorMessage } from '@/lib/api';
@@ -80,10 +81,11 @@ export function PremisesBoard({ data, canManage, onUpdated }: { data: PremisesOv
           <EmptyState
             icon={<Building2 className="h-6 w-6" />}
             title="No structured master data"
-            description="Other organizations keep a people capacity only. Change the organization type to office, hostel, home, school or hospital when this site needs floors, beds or employee types."
+            description="This organization keeps a people capacity only. Office, home, school and hospital sites keep workforce or floor records here. A hostel keeps its tenant list here."
           />
         </Card>
       )}
+      {profile.master === 'tenants' && <TenantBoard remaining={data.usage.remaining} onUpdated={onUpdated} />}
       {profile.master === 'workforce' && (
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
           <EmployeeTypes data={data} canManage={canManage} onUpdated={onUpdated} />

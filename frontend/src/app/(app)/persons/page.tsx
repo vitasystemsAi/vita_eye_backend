@@ -1,6 +1,6 @@
 'use client';
 
-import { Search, UserPlus, Users } from 'lucide-react';
+import { ArrowLeftRight, Search, UserPlus, Users } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { EnrollmentBadge, PersonStatusBadge } from '@/components/badges';
@@ -46,7 +46,8 @@ function statusAction(from: PersonStatus, to: PersonStatus) {
 }
 
 function PersonsView() {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
+  const tenant = user?.organization?.organizationType === 'HOSTEL';
   const notify = useToast();
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<Tab>('ACTIVE');
@@ -117,13 +118,20 @@ function PersonsView() {
       <PageHeader
         title="Face Registration"
         icon={<Users className="h-5 w-5" />}
-        description="Registered persons and their enrollment status. Biometric templates are encrypted and never displayed."
+        description={tenant ? 'Tenant face enrollment. Templates are encrypted and never displayed.' : 'Registered persons and their enrollment status. Biometric templates are encrypted and never displayed.'}
         actions={
-          manage && (
-            <Link href="/persons/new">
-              <Button icon={<UserPlus className="h-4 w-4" />}>Register person</Button>
-            </Link>
-          )
+          <div className="flex flex-wrap gap-2">
+            {can('data:export') && (
+              <Link href="/data">
+                <Button variant="secondary" icon={<ArrowLeftRight className="h-4 w-4" />}>Data exchange</Button>
+              </Link>
+            )}
+            {manage && (
+              <Link href="/persons/new">
+                <Button icon={<UserPlus className="h-4 w-4" />}>{tenant ? 'Register tenant' : 'Register person'}</Button>
+              </Link>
+            )}
+          </div>
         }
       />
       <Card>
@@ -139,7 +147,7 @@ function PersonsView() {
         <div className="flex flex-wrap gap-3 border-b border-ink-700/70 p-4">
           <div className="relative min-w-[220px] flex-1">
             <Search className="pointer-events-none absolute top-2.5 left-3 h-4 w-4 text-ink-400" />
-            <Input placeholder="Search name, reference ID or department" className="pl-9" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+            <Input placeholder={tenant ? 'Search name, mobile number or room' : 'Search name, reference ID or department'} className="pl-9" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
           </div>
           <Select className="w-48" value={enrollment} onChange={(e) => { setEnrollment(e.target.value); setPage(1); }} aria-label="Enrollment">
             <option value="">All enrollment states</option>
@@ -162,8 +170,8 @@ function PersonsView() {
               <thead className="border-b border-ink-700/70">
                 <tr>
                   <th className="table-head">Name</th>
-                  <th className="table-head">Reference ID</th>
-                  <th className="table-head">Department</th>
+                  <th className="table-head">{tenant ? 'Mobile number' : 'Reference ID'}</th>
+                  <th className="table-head">{tenant ? 'Room number' : 'Department'}</th>
                   <th className="table-head">Status</th>
                   <th className="table-head">Enrollment</th>
                   <th className="table-head">Templates</th>
@@ -233,6 +241,7 @@ function PersonsView() {
         {editing && (
           <PersonForm
             key={editing.id}
+            variant={tenant ? 'tenant' : 'person'}
             initial={{ personName: editing.personName, referenceId: editing.referenceId, department: editing.department ?? '', status: editing.status }}
             submitLabel="Save changes"
             onCancel={() => setEditing(null)}

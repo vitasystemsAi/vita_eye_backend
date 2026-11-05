@@ -9,9 +9,11 @@ import { createSocketServer } from './sockets';
 import { closeQueues, scheduleMaintenance } from './jobs/queues';
 import { startNotificationWorker } from './jobs/notification.worker';
 import { startMaintenanceWorker } from './jobs/maintenance.worker';
+import { syncRbacCatalogue } from './db/syncRbac';
 
 async function main() {
   await sequelize.authenticate();
+  await syncRbacCatalogue();
   await redis.ping();
   const version = /redis_version:(\d+)\.(\d+)/.exec(await redis.info('server'));
   if (version && (Number(version[1]) < 6 || (Number(version[1]) === 6 && Number(version[2]) < 2))) {

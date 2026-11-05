@@ -21,7 +21,11 @@ export type Permission =
   | 'settings:view'
   | 'settings:manage'
   | 'premises:view'
-  | 'premises:manage';
+  | 'premises:manage'
+  | 'data:export'
+  | 'data:import'
+  | 'faces:export'
+  | 'faces:import';
 
 export interface PageMeta {
   page: number;
@@ -58,7 +62,7 @@ export type FeatureKey =
   | 'auditLogs';
 
 export type OrganizationTypeCode = 'OFFICE' | 'HOSTEL' | 'HOME' | 'SCHOOL' | 'HOSPITAL' | 'OTHER';
-export type MasterKind = 'workforce' | 'lodging' | 'layout' | 'none';
+export type MasterKind = 'workforce' | 'lodging' | 'layout' | 'tenants' | 'none';
 export type BedStatus = 'AVAILABLE' | 'OCCUPIED' | 'RESERVED' | 'MAINTENANCE';
 
 export type OrganizationStatus = 'PROVISIONING' | 'PENDING' | 'ACTIVE' | 'SUSPENDED' | 'ON_HOLD' | 'DEACTIVATED' | 'ARCHIVED' | 'FAILED';

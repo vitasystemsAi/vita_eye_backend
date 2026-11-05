@@ -8,6 +8,7 @@ import notificationsRoutes from './notifications.routes';
 import platformRoutes from './platform.routes';
 import { eventsRouter, evidenceRouter } from './events.routes';
 import premisesRoutes from './premises.routes';
+import dataExchangeRoutes from './dataExchange.routes';
 import * as dashboard from '../controllers/dashboard.controller';
 import * as settings from '../controllers/settings.controller';
 import * as internal from '../controllers/internal.controller';
@@ -25,6 +26,7 @@ api.use('/events', eventsRouter);
 api.use('/evidence', evidenceRouter);
 api.use('/notifications', notificationsRoutes);
 api.use('/premises', premisesRoutes);
+api.use('/data', dataExchangeRoutes);
 
 const dash = Router();
 dash.use(authenticate, requirePermission('dashboard:view'));

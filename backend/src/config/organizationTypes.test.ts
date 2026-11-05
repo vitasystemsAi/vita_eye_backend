@@ -35,12 +35,13 @@ describe('organization types', () => {
 
   it('falls back when a stored type is missing', () => {
     expect(organizationTypeOf(null).code).toBe('OTHER');
-    expect(organizationTypeOf('HOSTEL').master).toBe('lodging');
+    expect(organizationTypeOf('HOSTEL').master).toBe('tenants');
+    expect(organizationTypeOf('HOSTEL').roomTypes).toEqual([]);
   });
 
   it('resolves a room type inside its organization type', () => {
-    expect(roomTypeOf('HOSTEL', 'DORM')?.defaultCapacity).toBe(8);
-    expect(roomTypeOf('HOSPITAL', 'DORM')).toBeUndefined();
+    expect(roomTypeOf('HOSPITAL', 'WARD')?.defaultCapacity).toBe(6);
+    expect(roomTypeOf('HOSTEL', 'DORM')).toBeUndefined();
     expect(roomTypeOf('OFFICE', 'SINGLE')).toBeUndefined();
   });
 

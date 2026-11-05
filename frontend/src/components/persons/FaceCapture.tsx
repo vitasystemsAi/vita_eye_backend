@@ -1,7 +1,8 @@
 'use client';
 
-import { Camera, CameraOff, ImagePlus, SwitchCamera, Trash2, Upload } from 'lucide-react';
+import { Camera, CameraOff, ImagePlus, Maximize2, SwitchCamera, Trash2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Badge, Button, Tabs } from '@/components/ui/primitives';
 import { api } from '@/lib/api';
 import { assessCanvasGuide, assessImage, guideCrop, guideSignature, signatureMotion, type LocalQuality } from '@/lib/imageQuality';
@@ -41,7 +42,54 @@ type AutoPhase = { kind: 'align'; text: string } | { kind: 'hold'; progress: num
 
 type Facing = 'user' | 'environment';
 
-const VIDEO_SIZE: MediaTrackConstraints = { width: { ideal: 1280 }, height: { ideal: 720 } };
+const VIDEO_SIZE: MediaTrackConstraints = { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
+
+type StageLayout = {
+  canvasLeft: number;
+  canvasTop: number;
+  canvasW: number;
+  canvasH: number;
+  guideLeft: number;
+  guideTop: number;
+  guideW: number;
+  guideH: number;
+};
+
+/** Scale the live frame so the enrollment guide fills the stage. The guide stays the same crop the photo is saved from. */
+function fitGuide(videoW: number, videoH: number, boxW: number, boxH: number, topInset: number, bottomInset: number): StageLayout {
+  const { sw, sh } = guideCrop(videoW, videoH);
+  const side = 8;
+  const availW = Math.max(48, boxW - side * 2);
+  const availH = Math.max(48, boxH - topInset - bottomInset);
+  const scale = Math.min(availW / sw, availH / sh);
+  const guideW = sw * scale;
+  const guideH = sh * scale;
+  const canvasW = videoW * scale;
+  const canvasH = videoH * scale;
+  const cx = boxW / 2;
+  const cy = topInset + availH / 2;
+  return {
+    canvasLeft: cx - canvasW / 2,
+    canvasTop: cy - canvasH / 2,
+    canvasW,
+    canvasH,
+    guideLeft: cx - guideW / 2,
+    guideTop: cy - guideH / 2,
+    guideW,
+    guideH,
+  };
+}
+
+function sameLayout(a: StageLayout, b: StageLayout) {
+  return (
+    Math.abs(a.canvasW - b.canvasW) < 0.5 &&
+    Math.abs(a.canvasH - b.canvasH) < 0.5 &&
+    Math.abs(a.canvasLeft - b.canvasLeft) < 0.5 &&
+    Math.abs(a.canvasTop - b.canvasTop) < 0.5 &&
+    Math.abs(a.guideW - b.guideW) < 0.5 &&
+    Math.abs(a.guideH - b.guideH) < 0.5
+  );
+}
 
 function cameraErrorMessage(err: unknown, switching = false): string {
   const name = (err as DOMException).name;
@@ -125,9 +173,18 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
   const [fileError, setFileError] = useState<string | null>(null);
   const [live, setLive] = useState<LocalQuality | null>(null);
   const [phase, setPhase] = useState<AutoPhase>({ kind: 'align', text: 'Align your face' });
+  const [mobile, setMobile] = useState(false);
+  const [immersive, setImmersive] = useState(false);
+  const [layout, setLayout] = useState<StageLayout | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const imagesRef = useRef(images);
+  const layoutBoxRef = useRef({ w: 0, h: 0 });
+  const bottomInsetRef = useRef(4);
+  const immersiveRef = useRef(false);
+  const layoutReadyRef = useRef(false);
+  const publishLayoutRef = useRef(() => {});
   const shootRef = useRef<() => boolean>(() => false);
   const pauseUntilRef = useRef(0);
   const inflightRef = useRef(false);
@@ -170,10 +227,15 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
     };
     const paint = () => {
       if (stopped) return;
-      if (video.videoWidth > 0) {
-        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+        if (video.videoWidth > 0) {
+        const resized = canvas.width !== video.videoWidth || canvas.height !== video.videoHeight;
+        if (resized) {
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
+        }
+        if (resized || !layoutReadyRef.current) {
+          layoutReadyRef.current = true;
+          publishLayoutRef.current();
         }
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -237,9 +299,10 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
     }).catch(() => undefined);
     return () => {
       stopped = true;
+      layoutReadyRef.current = false;
       cancelAnimationFrame(raf);
     };
-  }, [stream]);
+  }, [stream, immersive, mobile]);
 
   useEffect(() => {
     if (!stream) {
@@ -278,6 +341,85 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
   useEffect(() => {
     if (mode !== 'camera') stopCamera();
   }, [mode, stopCamera]);
+
+  const fullscreen = mobile && mode === 'camera' && immersive;
+  immersiveRef.current = fullscreen;
+  bottomInsetRef.current = fullscreen ? (images.length ? 248 : 180) : 48;
+
+  const publishLayout = useCallback(() => {
+    const video = videoRef.current;
+    const vw = video?.videoWidth ?? 0;
+    const vh = video?.videoHeight ?? 0;
+    const { w: bw, h: bh } = layoutBoxRef.current;
+    if (vw < 2 || vh < 2 || bw < 2 || bh < 2) return;
+    const top = immersiveRef.current ? 100 : 48;
+    const next = fitGuide(vw, vh, bw, bh, top, bottomInsetRef.current);
+    setLayout((prev) => (prev && sameLayout(prev, next) ? prev : next));
+  }, []);
+  publishLayoutRef.current = publishLayout;
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const apply = () => {
+      const next = mq.matches;
+      setMobile(next);
+      if (next) setImmersive(true);
+    };
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, []);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [fullscreen]);
+
+  useEffect(() => {
+    if (!stream) setLayout(null);
+  }, [stream]);
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el || mode !== 'camera') return;
+    const readBox = () => {
+      if (immersiveRef.current && window.visualViewport) {
+        const vv = window.visualViewport;
+        layoutBoxRef.current = { w: vv.width, h: vv.height };
+        el.style.height = `${vv.height}px`;
+        el.style.width = `${vv.width}px`;
+        el.style.top = `${vv.offsetTop}px`;
+        el.style.left = `${vv.offsetLeft}px`;
+      } else {
+        el.style.height = '';
+        el.style.width = '';
+        el.style.top = '';
+        el.style.left = '';
+        const rect = el.getBoundingClientRect();
+        layoutBoxRef.current = { w: rect.width, h: rect.height };
+      }
+      publishLayout();
+    };
+    readBox();
+    const ro = new ResizeObserver(readBox);
+    ro.observe(el);
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', readBox);
+    vv?.addEventListener('scroll', readBox);
+    return () => {
+      ro.disconnect();
+      vv?.removeEventListener('resize', readBox);
+      vv?.removeEventListener('scroll', readBox);
+    };
+  }, [mode, fullscreen, stream, publishLayout]);
+
+  useEffect(() => {
+    publishLayout();
+  }, [images.length, fullscreen, publishLayout]);
 
   function applyStream(nextStream: MediaStream, requested: Facing) {
     const mirror = mirrorFor(nextStream, requested);
@@ -411,74 +553,139 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
 
   const full = images.length >= MAX_IMAGES;
   const pose = images.length >= AUTO_SHOTS ? { title: 'Five guided photos ready', hint: 'Enroll these photos.' } : POSES[images.length];
+  const phaseLabel = phase.kind === 'done' ? '5 photos ready' : phase.kind === 'saved' ? 'Saved' : phase.kind === 'count' ? 'Capturing' : phase.kind === 'hold' ? 'Hold still' : phase.text;
+  const phaseHint = phase.kind === 'done' ? 'All five guided photos are ready. You can enroll.' : phase.kind === 'saved' ? `Saved. ${pose.hint}` : phase.kind === 'count' || phase.kind === 'hold' ? 'Hold still — taking the photo' : phase.text;
+  const phaseReady = phase.kind === 'hold' || phase.kind === 'count' || phase.kind === 'saved' || phase.kind === 'done';
 
-  return (
-    <div className="space-y-4">
-      <Tabs
-        value={mode}
-        onChange={setMode}
-        tabs={[
-          { value: 'camera', label: 'Capture from camera' },
-          { value: 'upload', label: 'Upload photos' },
-        ]}
-      />
-      {mode === 'camera' ? (
-        <div className="space-y-3">
-          <div className="relative aspect-video overflow-hidden rounded-xl border border-ink-700 bg-ink-950">
-            {stream ? (
-              <>
-                <video ref={videoRef} playsInline muted className="pointer-events-none absolute h-px w-px opacity-0" />
-                <canvas ref={canvasRef} className={`h-full w-full object-contain ${facing === 'user' ? 'scale-x-[-1]' : ''}`} />
-                <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                  <div className="relative h-[78%] aspect-[3/4]">
-                    <div className="absolute inset-0 rounded-[46%] border-2 border-brand-300/90 shadow-[0_0_0_9999px_rgba(2,6,16,0.45)]" />
-                    <div className="absolute inset-x-[18%] top-[40%] border-t border-brand-200/90" />
-                    <div className="absolute top-[40%] left-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-brand-200" />
-                    <span className="absolute top-[18%] left-1/2 -translate-x-1/2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] tracking-wide text-white uppercase">Eyes on the line</span>
-                  </div>
+  const stage = (
+    <div
+      ref={stageRef}
+      className={
+        fullscreen
+          ? 'fixed top-0 left-0 z-[80] h-[100dvh] w-screen overflow-hidden bg-black select-none'
+          : 'relative overflow-hidden rounded-xl border border-ink-700 bg-ink-950 select-none max-md:min-h-[72dvh] md:aspect-video'
+      }
+    >
+      {stream ? (
+        <>
+          <video ref={videoRef} playsInline muted autoPlay className="pointer-events-none absolute h-px w-px opacity-0" />
+          <canvas
+            ref={canvasRef}
+            className={`absolute max-w-none object-contain ${layout ? '' : 'inset-0 h-full w-full'} ${facing === 'user' ? 'scale-x-[-1]' : ''}`}
+            style={layout ? { left: layout.canvasLeft, top: layout.canvasTop, width: layout.canvasW, height: layout.canvasH } : undefined}
+          />
+          {layout && (
+            <div className="pointer-events-none absolute" style={{ left: layout.guideLeft, top: layout.guideTop, width: layout.guideW, height: layout.guideH }}>
+              <div className="absolute inset-0 rounded-[46%] border-[3px] border-brand-300/95 shadow-[0_0_0_9999px_rgba(2,6,16,0.55)]" />
+              <div className="absolute inset-x-[18%] top-[40%] border-t-2 border-brand-200/95" />
+              <div className="absolute top-[40%] left-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-brand-200 shadow-[0_0_0_4px_rgba(147,197,253,0.35)]" />
+              <span className="absolute top-[15%] left-1/2 -translate-x-1/2 rounded bg-black/60 px-2 py-0.5 text-[11px] font-medium tracking-wide text-white uppercase">Eyes on the line</span>
+              {phase.kind === 'hold' && (
+                <div className="absolute inset-x-5 -top-4 h-1.5 overflow-hidden rounded-full bg-white/25">
+                  <div className="h-full bg-emerald-400" style={{ width: `${Math.round(phase.progress * 100)}%` }} />
                 </div>
-                <div className="absolute inset-x-2 top-2 z-10 flex items-center justify-between gap-2">
-                  <p className="min-w-0 truncate rounded bg-black/70 px-2 py-1 text-xs font-medium text-white">{pose.title}</p>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void switchCamera()}
-                      disabled={switching}
-                      aria-label={facing === 'user' ? 'Use back camera' : 'Use front camera'}
-                      title={facing === 'user' ? 'Use back camera' : 'Use front camera'}
-                      className="rounded-full bg-black/70 p-2 text-white transition hover:bg-black/85 disabled:opacity-50"
-                    >
-                      <SwitchCamera className="h-4 w-4" />
-                    </button>
-                    <p className={`rounded px-2 py-1 text-xs font-medium ${phase.kind === 'hold' || phase.kind === 'count' || phase.kind === 'saved' || phase.kind === 'done' ? 'bg-emerald-500/90 text-ink-950' : 'bg-amber-500/90 text-ink-950'}`}>
-                      {phase.kind === 'done' ? '5 photos ready' : phase.kind === 'saved' ? 'Saved' : phase.kind === 'count' ? 'Capturing' : phase.kind === 'hold' ? 'Hold still' : phase.text}
-                    </p>
-                  </div>
+              )}
+              {phase.kind === 'count' && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className="text-8xl font-semibold text-white drop-shadow-[0_2px_12px_rgba(0,0,0,0.85)]">{phase.n}</span>
                 </div>
-                {phase.kind === 'hold' && (
-                  <div className="absolute inset-x-16 top-12 h-1 overflow-hidden rounded-full bg-white/25">
-                    <div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${Math.round(phase.progress * 100)}%` }} />
-                  </div>
-                )}
-                {phase.kind === 'count' && (
-                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                    <span className="text-7xl font-semibold text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">{phase.n}</span>
-                  </div>
-                )}
-                <p className="absolute inset-x-2 bottom-2 rounded bg-black/70 px-2 py-1 text-center text-xs text-white">
-                  {phase.kind === 'done' ? 'All five guided photos are ready. You can enroll.' : phase.kind === 'saved' ? `Saved. ${pose.hint}` : phase.kind === 'count' || phase.kind === 'hold' ? 'Hold still — taking the photo' : phase.text}
-                </p>
-              </>
-            ) : (
-              <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-                <CameraOff className="h-8 w-8 text-ink-400" />
-                <p className="text-sm text-ink-300">{camError ?? 'Camera is off'}</p>
-                <Button onClick={() => void startCamera()} icon={<Camera className="h-4 w-4" />}>
-                  Start camera
+              )}
+            </div>
+          )}
+          <div className={`absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-2 ${fullscreen ? 'px-3 pt-[max(0.75rem,env(safe-area-inset-top))]' : 'px-2 pt-2'}`}>
+            <div className="flex min-w-0 items-center gap-2">
+              {fullscreen && (
+                <button type="button" onClick={() => setImmersive(false)} className="shrink-0 rounded-full bg-black/70 px-3 py-1.5 text-xs font-medium text-white">
+                  {images.length >= AUTO_SHOTS ? 'Continue' : 'Back'}
+                </button>
+              )}
+              <p className="min-w-0 truncate rounded bg-black/70 px-2 py-1 text-xs font-medium text-white">{pose.title}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void switchCamera()}
+                disabled={switching}
+                aria-label={facing === 'user' ? 'Use back camera' : 'Use front camera'}
+                title={facing === 'user' ? 'Use back camera' : 'Use front camera'}
+                className="rounded-full bg-black/70 p-2.5 text-white transition hover:bg-black/85 disabled:opacity-50"
+              >
+                <SwitchCamera className="h-5 w-5" />
+              </button>
+              <p className={`rounded px-2 py-1 text-xs font-medium ${phaseReady ? 'bg-emerald-500/90 text-ink-950' : 'bg-amber-500/90 text-ink-950'}`}>{phaseLabel}</p>
+            </div>
+          </div>
+          <div className={`absolute inset-x-0 bottom-0 z-10 space-y-2 ${fullscreen ? 'bg-gradient-to-t from-black via-black/80 to-transparent px-3 pt-10 pb-[max(0.75rem,env(safe-area-inset-bottom))]' : 'px-2 pb-2'}`}>
+            {fullscreen && images.length > 0 && (
+              <ul className="flex gap-2 overflow-x-auto">
+                {images.map((img) => (
+                  <li key={img.id} className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-white/30">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img.url} alt="" className={`h-full w-full object-cover ${img.mirror ? 'scale-x-[-1]' : ''}`} />
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="rounded bg-black/70 px-2 py-1.5 text-center text-sm text-white">{phaseHint}</p>
+            {fullscreen && fileError && <p className="rounded bg-red-950/80 px-2 py-1.5 text-center text-sm text-red-200">{fileError}</p>}
+            {fullscreen && (
+              <div className="flex gap-2">
+                <Button className="min-w-0 flex-1" onClick={capture} disabled={full || switching} icon={<ImagePlus className="h-4 w-4" />}>
+                  Capture ({images.length}/{MAX_IMAGES})
+                </Button>
+                <Button variant="secondary" onClick={stopCamera} disabled={switching} icon={<CameraOff className="h-4 w-4" />}>
+                  Stop
                 </Button>
               </div>
             )}
           </div>
+        </>
+      ) : (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
+          {fullscreen && (
+            <button type="button" onClick={() => setImmersive(false)} className="absolute top-[max(0.75rem,env(safe-area-inset-top))] left-3 rounded-full bg-black/70 px-3 py-1.5 text-xs font-medium text-white">
+              Back
+            </button>
+          )}
+          <CameraOff className={fullscreen ? 'h-14 w-14 text-ink-300' : 'h-8 w-8 text-ink-400'} />
+          <p className={fullscreen ? 'max-w-xs text-base text-ink-100' : 'text-sm text-ink-300'}>{camError ?? 'Camera is off'}</p>
+          {fullscreen && <p className="max-w-xs text-sm text-ink-300">This capture uses the full screen so the face is large enough to align and recognize.</p>}
+          <Button onClick={() => void startCamera()} icon={<Camera className="h-4 w-4" />}>
+            Start camera
+          </Button>
+          {fullscreen && (
+            <button type="button" onClick={() => setMode('upload')} className="text-sm text-ink-300 underline-offset-2 hover:underline">
+              Upload photos instead
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      {!fullscreen && (
+        <Tabs
+          value={mode}
+          onChange={setMode}
+          tabs={[
+            { value: 'camera', label: 'Capture from camera' },
+            { value: 'upload', label: 'Upload photos' },
+          ]}
+        />
+      )}
+      {mode === 'camera' ? (
+        fullscreen ? (
+          createPortal(stage, document.body)
+        ) : (
+        <div className="space-y-3">
+          {stage}
+          {mobile && (
+            <Button variant="secondary" onClick={() => setImmersive(true)} icon={<Maximize2 className="h-4 w-4" />}>
+              Full screen
+            </Button>
+          )}
           {stream && (
             <div className="space-y-2">
               <div className="flex flex-wrap gap-2">
@@ -496,6 +703,7 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
             </div>
           )}
         </div>
+        )
       ) : (
         <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-ink-600 bg-ink-850/50 px-6 py-10 text-center transition hover:border-brand-500/60">
           <Upload className="h-7 w-7 text-ink-300" />
@@ -512,7 +720,7 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
             <li key={img.id} className="group relative overflow-hidden rounded-lg border border-ink-700 bg-ink-850">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={img.url} alt="Enrollment sample" className={`aspect-square w-full object-cover ${img.mirror ? 'scale-x-[-1]' : ''}`} />
-              <button onClick={() => remove(img.id)} className="absolute top-1.5 right-1.5 rounded-md bg-black/70 p-1.5 text-ink-100 opacity-0 transition group-hover:opacity-100 focus:opacity-100" aria-label="Remove image">
+              <button onClick={() => remove(img.id)} className="absolute top-1.5 right-1.5 rounded-md bg-black/70 p-1.5 text-ink-100 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100" aria-label="Remove image">
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
               <div className="space-y-1 p-2">

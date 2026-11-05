@@ -7,6 +7,7 @@ import {
   MonitorPlay,
   ScrollText,
   Settings,
+  ArrowLeftRight,
   ShieldAlert,
   UserPlus,
   Users,
@@ -35,6 +36,7 @@ export const NAV: NavItem[] = [
   { href: '/cameras', label: 'Cameras', icon: Camera, permission: 'cameras:view', feature: 'cameraManagement', section: 'Management' },
   { href: '/premises', label: 'Master data', icon: Building2, permission: 'premises:view', section: 'Management' },
   { href: '/users', label: 'Users & Roles', icon: Users, permission: 'users:view', feature: 'userManagement', section: 'Administration' },
+  { href: '/data', label: 'Data exchange', icon: ArrowLeftRight, permission: 'data:export', feature: 'faceRegistration', section: 'Administration' },
   { href: '/settings', label: 'Settings', icon: Settings, permission: 'settings:view', feature: 'settings', section: 'Administration' },
   { href: '/audit', label: 'Audit Logs', icon: ScrollText, permission: 'audit:view', feature: 'auditLogs', section: 'Administration' },
 ];
@@ -45,6 +47,7 @@ export function navLabel(item: NavItem, organizationType?: string | null) {
     case 'OFFICE':
       return 'Workforce';
     case 'HOSTEL':
+      return 'Tenants';
     case 'HOSPITAL':
       return 'Floors & beds';
     case 'HOME':
