@@ -1,6 +1,6 @@
 'use client';
 
-import { Camera, CameraOff, ImagePlus, Trash2, Upload } from 'lucide-react';
+import { Camera, CameraOff, ImagePlus, SwitchCamera, Trash2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge, Button, Tabs } from '@/components/ui/primitives';
 import { api } from '@/lib/api';
@@ -12,6 +12,8 @@ export interface CapturedImage {
   url: string;
   quality: LocalQuality | null;
   source: 'camera' | 'upload';
+  /** Front-camera shots are shown mirrored so the thumbnail matches the live preview. */
+  mirror?: boolean;
 }
 
 const MAX_IMAGES = 5;
@@ -37,6 +39,64 @@ const POSE_FRESH_MS = 1200;
 
 type AutoPhase = { kind: 'align'; text: string } | { kind: 'hold'; progress: number } | { kind: 'count'; n: number } | { kind: 'saved' } | { kind: 'done' };
 
+type Facing = 'user' | 'environment';
+
+const VIDEO_SIZE: MediaTrackConstraints = { width: { ideal: 1280 }, height: { ideal: 720 } };
+
+function cameraErrorMessage(err: unknown, switching = false): string {
+  const name = (err as DOMException).name;
+  if (name === 'NotAllowedError') return 'Camera permission was denied. Allow camera access in the browser settings.';
+  if (name === 'NotFoundError') return switching ? 'Only one camera is available on this device.' : 'No camera was found on this device.';
+  if (name === 'NotReadableError') return 'The camera is in use by another app. Close it and try again.';
+  return switching ? `Could not switch camera: ${(err as Error).message}` : `Camera unavailable: ${(err as Error).message}`;
+}
+
+function openVideo(constraints: MediaTrackConstraints): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia({ video: { ...VIDEO_SIZE, ...constraints }, audio: false });
+}
+
+function denied(err: unknown): boolean {
+  const name = (err as DOMException).name;
+  return name === 'NotAllowedError' || name === 'SecurityError';
+}
+
+/** Front cameras are mirrored in the preview. A reported facing mode wins; otherwise the requested side is used. */
+function mirrorFor(stream: MediaStream, requested: Facing): boolean {
+  const reported = stream.getVideoTracks()[0]?.getSettings().facingMode;
+  if (reported === 'environment') return false;
+  if (reported === 'user') return true;
+  const label = stream.getVideoTracks()[0]?.label ?? '';
+  if (/back|rear|environment/i.test(label)) return false;
+  if (/front|user|face/i.test(label)) return true;
+  return requested === 'user';
+}
+
+async function acquireCamera(facing: Facing, previousId?: string): Promise<MediaStream> {
+  if (!previousId) {
+    try {
+      return await openVideo({ facingMode: { ideal: facing } });
+    } catch (err) {
+      if (denied(err)) throw err;
+      return openVideo({});
+    }
+  }
+
+  try {
+    const exact = await openVideo({ facingMode: { exact: facing } });
+    const id = exact.getVideoTracks()[0]?.getSettings().deviceId;
+    if (!id || id !== previousId) return exact;
+    exact.getTracks().forEach((track) => track.stop());
+  } catch (err) {
+    if (denied(err)) throw err;
+  }
+
+  const devices = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === 'videoinput' && device.deviceId && device.deviceId !== previousId);
+  if (!devices.length) throw new DOMException('Only one camera is available on this device.', 'NotFoundError');
+  const hint = facing === 'environment' ? /back|rear|environment/i : /front|user|face/i;
+  const preferred = devices.find((device) => hint.test(device.label)) ?? devices[0];
+  return openVideo({ deviceId: { exact: preferred.deviceId } });
+}
+
 interface PoseReading {
   target: PoseId;
   matched: boolean;
@@ -59,6 +119,8 @@ function guideJpeg(canvas: HTMLCanvasElement): Promise<Blob | null> {
 export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onChange: (imgs: CapturedImage[]) => void }) {
   const [mode, setMode] = useState<'camera' | 'upload'>('camera');
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [facing, setFacing] = useState<Facing>('user');
+  const [switching, setSwitching] = useState(false);
   const [camError, setCamError] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [live, setLive] = useState<LocalQuality | null>(null);
@@ -70,6 +132,8 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
   const pauseUntilRef = useRef(0);
   const inflightRef = useRef(false);
   const poseRef = useRef<PoseReading | null>(null);
+  const facingRef = useRef<Facing>('user');
+  const switchingRef = useRef(false);
   useEffect(() => {
     imagesRef.current = images;
   }, [images]);
@@ -215,8 +279,20 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
     if (mode !== 'camera') stopCamera();
   }, [mode, stopCamera]);
 
+  function applyStream(nextStream: MediaStream, requested: Facing) {
+    const mirror = mirrorFor(nextStream, requested);
+    const actual: Facing = mirror ? 'user' : 'environment';
+    facingRef.current = actual;
+    setFacing(actual);
+    setStream((current) => {
+      if (current && current !== nextStream) current.getTracks().forEach((track) => track.stop());
+      return nextStream;
+    });
+  }
+
   async function startCamera() {
     setCamError(null);
+    setFileError(null);
     setLive(null);
     setPhase({ kind: 'align', text: 'Align your face' });
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -224,17 +300,43 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
       return;
     }
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }, audio: false });
-      setStream(s);
+      applyStream(await acquireCamera(facingRef.current), facingRef.current);
     } catch (err) {
-      const name = (err as DOMException).name;
-      setCamError(name === 'NotAllowedError' ? 'Camera permission was denied. Allow camera access in the browser settings.' : name === 'NotFoundError' ? 'No camera was found on this device.' : `Camera unavailable: ${(err as Error).message}`);
+      setCamError(cameraErrorMessage(err));
     }
   }
 
-  async function add(file: File, source: CapturedImage['source']) {
+  async function switchCamera() {
+    if (switchingRef.current) return;
+    const next: Facing = facingRef.current === 'user' ? 'environment' : 'user';
+    const previousId = stream?.getVideoTracks()[0]?.getSettings().deviceId;
+    const previousFacing = facingRef.current;
+    switchingRef.current = true;
+    setSwitching(true);
+    setFileError(null);
+    pauseUntilRef.current = performance.now() + 2000;
+    stream?.getTracks().forEach((track) => track.stop());
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    try {
+      applyStream(await acquireCamera(next, previousId), next);
+      setLive(null);
+      setPhase({ kind: 'align', text: 'Align your face' });
+    } catch (err) {
+      try {
+        applyStream(await acquireCamera(previousFacing), previousFacing);
+      } catch {
+        setStream(null);
+      }
+      setFileError(cameraErrorMessage(err, true));
+    } finally {
+      switchingRef.current = false;
+      setSwitching(false);
+    }
+  }
+
+  async function add(file: File, source: CapturedImage['source'], mirror = false) {
     const url = URL.createObjectURL(file);
-    const img: CapturedImage = { id: crypto.randomUUID(), file, url, quality: null, source };
+    const img: CapturedImage = { id: crypto.randomUUID(), file, url, quality: null, source, mirror };
     const next = [...imagesRef.current, img].slice(0, MAX_IMAGES);
     imagesRef.current = next;
     onChange(next);
@@ -260,10 +362,11 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
     out.height = sh;
     out.getContext('2d')?.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
     const pose = POSES[Math.min(imagesRef.current.length, POSES.length - 1)].title;
+    const mirror = facingRef.current === 'user';
     inflightRef.current = true;
     out.toBlob((blob) => {
       inflightRef.current = false;
-      if (blob) void add(new File([blob], `capture-${pose.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.jpg`, { type: 'image/jpeg' }), 'camera');
+      if (blob) void add(new File([blob], `capture-${pose.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.jpg`, { type: 'image/jpeg' }), 'camera', mirror);
     }, 'image/jpeg', 0.95);
     return true;
   };
@@ -325,7 +428,7 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
             {stream ? (
               <>
                 <video ref={videoRef} playsInline muted className="pointer-events-none absolute h-px w-px opacity-0" />
-                <canvas ref={canvasRef} className="h-full w-full scale-x-[-1] object-contain" />
+                <canvas ref={canvasRef} className={`h-full w-full object-contain ${facing === 'user' ? 'scale-x-[-1]' : ''}`} />
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="relative h-[78%] aspect-[3/4]">
                     <div className="absolute inset-0 rounded-[46%] border-2 border-brand-300/90 shadow-[0_0_0_9999px_rgba(2,6,16,0.45)]" />
@@ -334,11 +437,23 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
                     <span className="absolute top-[18%] left-1/2 -translate-x-1/2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] tracking-wide text-white uppercase">Eyes on the line</span>
                   </div>
                 </div>
-                <div className="absolute inset-x-2 top-2 flex items-center justify-between gap-2">
-                  <p className="rounded bg-black/70 px-2 py-1 text-xs font-medium text-white">{pose.title}</p>
-                  <p className={`rounded px-2 py-1 text-xs font-medium ${phase.kind === 'hold' || phase.kind === 'count' || phase.kind === 'saved' || phase.kind === 'done' ? 'bg-emerald-500/90 text-ink-950' : 'bg-amber-500/90 text-ink-950'}`}>
-                    {phase.kind === 'done' ? '5 photos ready' : phase.kind === 'saved' ? 'Saved' : phase.kind === 'count' ? 'Capturing' : phase.kind === 'hold' ? 'Hold still' : phase.text}
-                  </p>
+                <div className="absolute inset-x-2 top-2 z-10 flex items-center justify-between gap-2">
+                  <p className="min-w-0 truncate rounded bg-black/70 px-2 py-1 text-xs font-medium text-white">{pose.title}</p>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void switchCamera()}
+                      disabled={switching}
+                      aria-label={facing === 'user' ? 'Use back camera' : 'Use front camera'}
+                      title={facing === 'user' ? 'Use back camera' : 'Use front camera'}
+                      className="rounded-full bg-black/70 p-2 text-white transition hover:bg-black/85 disabled:opacity-50"
+                    >
+                      <SwitchCamera className="h-4 w-4" />
+                    </button>
+                    <p className={`rounded px-2 py-1 text-xs font-medium ${phase.kind === 'hold' || phase.kind === 'count' || phase.kind === 'saved' || phase.kind === 'done' ? 'bg-emerald-500/90 text-ink-950' : 'bg-amber-500/90 text-ink-950'}`}>
+                      {phase.kind === 'done' ? '5 photos ready' : phase.kind === 'saved' ? 'Saved' : phase.kind === 'count' ? 'Capturing' : phase.kind === 'hold' ? 'Hold still' : phase.text}
+                    </p>
+                  </div>
                 </div>
                 {phase.kind === 'hold' && (
                   <div className="absolute inset-x-16 top-12 h-1 overflow-hidden rounded-full bg-white/25">
@@ -365,13 +480,19 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
             )}
           </div>
           {stream && (
-            <div className="flex gap-2">
-              <Button onClick={capture} disabled={full} icon={<ImagePlus className="h-4 w-4" />}>
-                Capture now ({images.length}/{MAX_IMAGES})
-              </Button>
-              <Button variant="secondary" onClick={stopCamera} icon={<CameraOff className="h-4 w-4" />}>
-                Stop camera
-              </Button>
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={capture} disabled={full || switching} icon={<ImagePlus className="h-4 w-4" />}>
+                  Capture now ({images.length}/{MAX_IMAGES})
+                </Button>
+                <Button variant="secondary" onClick={() => void switchCamera()} disabled={switching} icon={<SwitchCamera className="h-4 w-4" />}>
+                  {switching ? 'Switching…' : facing === 'user' ? 'Use back camera' : 'Use front camera'}
+                </Button>
+                <Button variant="secondary" onClick={stopCamera} disabled={switching} icon={<CameraOff className="h-4 w-4" />}>
+                  Stop camera
+                </Button>
+              </div>
+              <p className="text-xs text-ink-400">On a phone, use the back camera for a sharper enrollment photo. {facing === 'user' ? 'This preview is the front camera.' : 'This preview is the back camera.'}</p>
             </div>
           )}
         </div>
@@ -390,7 +511,7 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
           {images.map((img) => (
             <li key={img.id} className="group relative overflow-hidden rounded-lg border border-ink-700 bg-ink-850">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={img.url} alt="Enrollment sample" className={`aspect-square w-full object-cover ${img.source === 'camera' ? 'scale-x-[-1]' : ''}`} />
+              <img src={img.url} alt="Enrollment sample" className={`aspect-square w-full object-cover ${img.mirror ? 'scale-x-[-1]' : ''}`} />
               <button onClick={() => remove(img.id)} className="absolute top-1.5 right-1.5 rounded-md bg-black/70 p-1.5 text-ink-100 opacity-0 transition group-hover:opacity-100 focus:opacity-100" aria-label="Remove image">
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
