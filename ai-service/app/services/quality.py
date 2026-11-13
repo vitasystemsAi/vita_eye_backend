@@ -33,6 +33,8 @@ class QualityReport:
 
         Enrollment keeps the strict ``usable`` gate. Distance and low light often miss that
         bar while the landmarks are still good enough for a similarity decision.
+        Extreme profile / chin-down poses are left as low quality instead of an uncertain
+        mid-band match that would never clear the naming threshold.
         """
         if "LANDMARKS_UNRELIABLE" in self.issues:
             return False
@@ -41,6 +43,9 @@ class QualityReport:
         # Never demand more detector confidence than the organization asked for, and never
         # let a strict enrollment-style cutoff throw away a clear but distant face.
         if self.detection_score < min(0.62, min_detection_score):
+            return False
+        # |yaw| > 0.55 is a strong profile; similarity in that pose is too noisy to name.
+        if abs(self.pose_yaw) > 0.55:
             return False
         return True
 

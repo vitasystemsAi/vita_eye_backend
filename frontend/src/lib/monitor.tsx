@@ -111,8 +111,15 @@ function cameraErrorMessage(err: unknown): string {
   const name = (err as DOMException)?.name;
   if (name === 'NotAllowedError') return 'Camera permission denied. Allow camera access in the address bar, then press Resume.';
   if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'Camera not found. Reconnect it — monitoring resumes automatically.';
-  if (name === 'NotReadableError') return 'The camera is in use by another application — retrying.';
+  if (name === 'NotReadableError' || name === 'AbortError' || name === 'TrackStartError') {
+    return 'This device’s camera is busy (Camera app, Snapchat, Zoom/Meet, or another browser tab). Close that app, then press Resume — Vita Eye keeps retrying automatically.';
+  }
   return errorMessage(err);
+}
+
+export function isCameraBusyError(err: unknown): boolean {
+  const name = (err as DOMException)?.name ?? (err instanceof Error && /camera is busy|in use by another/i.test(err.message) ? 'NotReadableError' : undefined);
+  return name === 'NotReadableError' || name === 'AbortError' || name === 'TrackStartError';
 }
 
 /** Tells the server to stop: live socket, then a one-off ticket socket, then the logged-in REST API. */

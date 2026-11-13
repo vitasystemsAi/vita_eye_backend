@@ -6,7 +6,7 @@ import { BrowserStage, RemotePreview } from '@/components/monitoring/BrowserMoni
 import { cn } from '@/components/ui/cn';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage } from '@/lib/api';
-import { useMonitor } from '@/lib/monitor';
+import { isCameraBusyError, useMonitor } from '@/lib/monitor';
 import { isLocalCamera, type Camera, type CameraType } from '@/lib/types';
 
 const TYPE_LABEL: Record<CameraType, string> = { BROWSER: 'Browser', USB: 'USB', LAN: 'LAN', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
@@ -200,7 +200,7 @@ export function CameraWall({
       const deviceId = camera.cameraType === 'USB' ? (camera.streamReference ?? '') : '';
       onCameraChange(await monitor.start(camera, deviceId));
     } catch (err) {
-      notify('error', 'Could not start monitoring', errorMessage(err));
+      notify(isCameraBusyError(err) ? 'warning' : 'error', 'Could not start monitoring', errorMessage(err));
     }
   }
 

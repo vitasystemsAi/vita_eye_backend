@@ -5,9 +5,9 @@ import { useState } from 'react';
 import { CameraStatusBadge } from '@/components/badges';
 import { CameraForm, type CameraPayload } from '@/components/cameras/CameraForm';
 import { RequirePermission } from '@/components/RequirePermission';
-import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorBanner, Input, LoadingBlock, Modal, PageHeader, Select } from '@/components/ui/primitives';
+import { Badge, Button, Card, EmptyState, ErrorBanner, Input, LoadingBlock, Modal, PageHeader, Select } from '@/components/ui/primitives';
 import { useToast } from '@/components/ui/toast';
-import { api, errorMessage } from '@/lib/api';
+import { ApiError, api, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { fmtRelative } from '@/lib/format';
 import { useApi, useDebounced } from '@/lib/hooks';
@@ -76,6 +76,21 @@ function CamerasView() {
     void reload();
   }
 
+  async function deactivateCamera(camera: Camera) {
+    setBusy(`${camera.id}:toggle`);
+    try {
+      const { data: r } = await api.patch<Camera>(`/cameras/${camera.id}`, { isActive: false });
+      replace(r);
+      notify('success', 'Camera deactivated', 'History is preserved. Activate again when you need this camera.');
+      setDeleting(null);
+    } catch (err) {
+      notify('error', 'Action failed', errorMessage(err));
+      void reload();
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function remove() {
     if (!deleting) return;
     setBusy(`${deleting.id}:delete`);
@@ -85,7 +100,11 @@ function CamerasView() {
       setDeleting(null);
       void reload();
     } catch (err) {
-      notify('error', 'Delete failed', errorMessage(err));
+      if (err instanceof ApiError && err.status === 409) {
+        notify('warning', 'Cannot delete', 'This camera has recorded events. Click Deactivate in the dialog to preserve the audit trail.');
+      } else {
+        notify('error', 'Delete failed', errorMessage(err));
+      }
     } finally {
       setBusy(null);
     }
@@ -228,15 +247,40 @@ function CamerasView() {
           </div>
         )}
       </Modal>
-      <ConfirmDialog
+      <Modal
         open={deleting !== null}
         onClose={() => setDeleting(null)}
-        title="Delete camera"
-        confirmLabel="Delete"
-        loading={busy?.endsWith(':delete')}
-        onConfirm={() => void remove()}
-        message={<p>Delete <strong>{deleting?.cameraName}</strong>? Cameras with recorded events cannot be deleted — deactivate them instead to preserve the audit trail.</p>}
-      />
+        title="Remove camera"
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setDeleting(null)} disabled={Boolean(busy)}>
+              Cancel
+            </Button>
+            {deleting?.isActive && (
+              <Button
+                variant="warning"
+                loading={busy === `${deleting.id}:toggle`}
+                onClick={() => void deactivateCamera(deleting)}
+              >
+                Deactivate
+              </Button>
+            )}
+            <Button variant="danger" loading={busy?.endsWith(':delete')} onClick={() => void remove()}>
+              Delete
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-2 text-sm text-ink-200">
+          <p>
+            Remove <strong>{deleting?.cameraName}</strong>?
+          </p>
+          <p className="text-ink-400">
+            Prefer <strong className="text-ink-200">Deactivate</strong> when this camera has detections — delete is blocked so the audit trail stays intact.
+          </p>
+        </div>
+      </Modal>
     </>
   );
 }

@@ -30,7 +30,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const notify = useCallback(
     (tone: Tone, title: string, message?: string) => {
       const id = nextId++;
-      setToasts((t) => [...t.slice(-4), { id, tone, title, message }]);
+      setToasts((t) => {
+        // Replace an identical toast instead of stacking duplicates (e.g. camera-busy retries).
+        const withoutDup = t.filter((x) => !(x.tone === tone && x.title === title && x.message === message));
+        return [...withoutDup.slice(-4), { id, tone, title, message }];
+      });
       setTimeout(() => dismiss(id), tone === 'error' ? 8000 : 5000);
     },
     [dismiss],

@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from app.services.face_engine import _compensate_light, _detection_view, _merge_faces
+from app.services.face_engine import _compensate_light, _detection_view, _merge_faces, _prune_faces
 from app.services.face_engine import DetectedFace
 from app.services.quality import QualityReport
 
@@ -49,3 +49,16 @@ def test_overlapping_distance_pass_does_not_duplicate_a_face():
     shifted[0] = 14
     merged = _merge_faces([DetectedFace(row)], [DetectedFace(shifted)])
     assert len(merged) == 1
+
+
+def test_nested_ear_box_is_pruned_from_face():
+    face = np.array([20, 20, 120, 140, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.92], dtype=np.float32)
+    ear = np.array([100, 70, 28, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.55], dtype=np.float32)
+    pruned = _prune_faces([DetectedFace(face), DetectedFace(ear)])
+    assert len(pruned) == 1
+    assert pruned[0].bbox[2] == 120
+
+
+def test_extreme_profile_is_not_matched():
+    report = _report(face_size=120, detection_score=0.95, score=0.7, pose_yaw=0.72, issues=["POSE_NOT_FRONTAL"])
+    assert report.identifiable(64, 0.85) is False

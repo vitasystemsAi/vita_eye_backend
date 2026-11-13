@@ -8,7 +8,7 @@ import { Badge, Button, Field, Select } from '@/components/ui/primitives';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { useMonitor, type MonitorStatus } from '@/lib/monitor';
+import { isCameraBusyError, useMonitor, type MonitorStatus } from '@/lib/monitor';
 import { useSocket } from '@/lib/socket';
 import { isLocalCamera, type Camera, type FrameFace } from '@/lib/types';
 import { listVideoInputs, splitVideoInputs } from '@/lib/usbCameras';
@@ -417,8 +417,9 @@ export function BrowserMonitor({
     try {
       onCameraChange(await monitor.start(camera, deviceId));
     } catch (err) {
-      setStartError(errorMessage(err));
-      notify('error', 'Could not start monitoring', errorMessage(err));
+      const message = errorMessage(err);
+      setStartError(message);
+      notify(isCameraBusyError(err) ? 'warning' : 'error', 'Could not start monitoring', message);
     }
   }
 

@@ -92,7 +92,8 @@ class FaceEngine:
             scale = min(1.6, DISTANCE_DETECT_SIDE / float(long_side))
             if scale > 1.08:
                 found = _merge_faces(found, self._detect_scaled(prepared, scale, DISTANCE_DETECT_SIDE))
-        return found
+        # Drop nested/ear-sized duplicates so one person does not get two live tracks.
+        return _prune_faces(found)
 
     def _detect_scaled(self, img: np.ndarray, scale: float, max_side: int) -> list[DetectedFace]:
         detector, _ = self._models()
@@ -194,13 +195,55 @@ def _iou(a: DetectedFace, b: DetectedFace) -> float:
     return overlap / union if union else 0.0
 
 
+def _box_area(face: DetectedFace) -> float:
+    _x, _y, width, height = face.bbox
+    return float(max(0, width) * max(0, height))
+
+
+def _containment_ratio(inner: DetectedFace, outer: DetectedFace) -> float:
+    """Fraction of ``inner``'s area that lies inside ``outer``."""
+    ax, ay, aw, ah = inner.bbox
+    bx, by, bw, bh = outer.bbox
+    x1, y1 = max(ax, bx), max(ay, by)
+    x2, y2 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+    overlap = max(0, x2 - x1) * max(0, y2 - y1)
+    area = _box_area(inner)
+    return overlap / area if area else 0.0
+
+
+def _nested_in(inner: DetectedFace, outer: DetectedFace) -> bool:
+    """True when ``inner`` is mostly inside a clearly larger ``outer`` face box."""
+    return _box_area(inner) < 0.55 * _box_area(outer) and _containment_ratio(inner, outer) >= 0.65
+
+
 def _merge_faces(primary: list[DetectedFace], extra: list[DetectedFace]) -> list[DetectedFace]:
     merged = list(primary)
     for face in extra:
-        if any(_iou(face, kept) >= 0.4 for kept in merged):
+        if any(_iou(face, kept) >= 0.4 or _nested_in(face, kept) for kept in merged):
             continue
-        merged.append(face)
+        # Prefer the larger box when the existing hit is an ear/cheek crop.
+        replaced = False
+        for index, kept in enumerate(merged):
+            if _nested_in(kept, face):
+                merged[index] = face
+                replaced = True
+                break
+        if not replaced:
+            merged.append(face)
     return merged
+
+
+def _prune_faces(faces: list[DetectedFace]) -> list[DetectedFace]:
+    """Keep the largest/highest-scoring face when boxes overlap or nest."""
+    if len(faces) < 2:
+        return faces
+    ordered = sorted(faces, key=lambda face: (_box_area(face), face.score), reverse=True)
+    kept: list[DetectedFace] = []
+    for face in ordered:
+        if any(_iou(face, other) >= 0.35 or _nested_in(face, other) for other in kept):
+            continue
+        kept.append(face)
+    return kept
 
 
 def decode_image(data: bytes, max_side: int = 1920) -> np.ndarray:
