@@ -17,8 +17,8 @@ const schema = z.object({
   LOG_LEVEL: z.string().default('info'),
   BACKEND_HOST: z.string().min(1).default('127.0.0.1'),
   BACKEND_PORT: z.coerce.number().int().positive().default(5000),
-  FRONTEND_ORIGIN: z.string().default('http://localhost:3002'),
-  PUBLIC_APP_URL: z.string().url().default('http://localhost:3002'),
+  FRONTEND_ORIGIN: z.string().default('http://localhost:3001'),
+  PUBLIC_APP_URL: z.string().url().default('http://localhost:3001'),
   TRUST_PROXY: bool(false),
   COOKIE_SECURE: bool(false),
 

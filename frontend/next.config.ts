@@ -27,27 +27,11 @@ const csp = [
   "object-src 'none'",
 ].join('; ');
 
-function hostFromOrigin(value: string | undefined): string | null {
-  if (!value) return null;
-  try {
-    return new URL(value.trim()).hostname;
-  } catch {
-    return value.trim().replace(/^https?:\/\//, '').split('/')[0] || null;
-  }
-}
-
 function devOrigins(): string[] {
-  const hosts = new Set(['localhost', '127.0.0.1', '*.trycloudflare.com']);
+  const hosts = new Set(['localhost', '127.0.0.1']);
   for (const list of Object.values(os.networkInterfaces())) {
     for (const net of list ?? []) {
       if (net.family === 'IPv4' && !net.internal) hosts.add(net.address);
-    }
-  }
-  // Cloudflare quick tunnels / custom public origins used for phone testing.
-  for (const raw of [process.env.FRONTEND_PUBLIC_ORIGIN, process.env.ALLOWED_DEV_ORIGINS]) {
-    for (const part of (raw ?? '').split(',')) {
-      const host = hostFromOrigin(part);
-      if (host) hosts.add(host);
     }
   }
   return [...hosts];

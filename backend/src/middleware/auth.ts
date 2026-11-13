@@ -16,8 +16,7 @@ const TENANT_STORE = Symbol('vitaTenantStore');
 type TenantAwareRequest = Request & { [TENANT_STORE]?: TenantStore };
 
 export function cookieBase() {
-  // Lax keeps sessions usable behind HTTPS tunnels (Cloudflare) and same-site API rewrites.
-  return { secure: env.cookieSecure, sameSite: 'lax' as const, path: '/' };
+  return { secure: env.cookieSecure, sameSite: 'strict' as const, path: '/' };
 }
 
 export function setSessionCookies(res: Response, tokens: { accessToken: string; refreshToken: string }) {
