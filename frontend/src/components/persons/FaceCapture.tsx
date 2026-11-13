@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Badge, Button, Tabs } from '@/components/ui/primitives';
 import { api } from '@/lib/api';
-import { assessCanvasGuide, assessImage, guideCrop, guideSignature, signatureMotion, type LocalQuality } from '@/lib/imageQuality';
+import { assessCanvasGuide, assessImage, estimateGuideYaw, guideCrop, guideSignature, signatureMotion, type LocalQuality } from '@/lib/imageQuality';
 
 export interface CapturedImage {
   id: string;
@@ -32,11 +32,15 @@ const POSES: Array<{ id: PoseId; title: string; hint: string }> = [
 ];
 
 const AUTO_SHOTS = POSES.length;
-const STILL_MAX = 11;
-const HOLD_MS = 600;
+const STILL_MAX = 9;
+const HOLD_MS = 700;
 const COUNT_MS = 900;
 const COOLDOWN_MS = 1600;
-const POSE_FRESH_MS = 1200;
+const POSE_FRESH_MS = 1800;
+const POSE_MATCHED_FRESH_MS = 2800;
+/** Pose-guide hits the AI service — poll only when the local frame is already clean. */
+const POSE_POLL_MS = 750;
+const CAMERA_RETRY_DELAYS_MS = [0, 450, 900];
 
 type AutoPhase = { kind: 'align'; text: string } | { kind: 'hold'; progress: number } | { kind: 'count'; n: number } | { kind: 'saved' } | { kind: 'done' };
 
@@ -95,12 +99,47 @@ function cameraErrorMessage(err: unknown, switching = false): string {
   const name = (err as DOMException).name;
   if (name === 'NotAllowedError') return 'Camera permission was denied. Allow camera access in the browser settings.';
   if (name === 'NotFoundError') return switching ? 'Only one camera is available on this device.' : 'No camera was found on this device.';
-  if (name === 'NotReadableError') return 'The camera is in use by another app. Close it and try again.';
+  if (name === 'NotReadableError') {
+    return switching
+      ? 'Could not switch camera — another app may still be using it. Close WhatsApp/Instagram/video calls and other browser tabs, wait a moment, then try again.'
+      : 'The camera is in use by another app or browser tab. Close camera apps and other tabs using the camera, wait a second, then tap Start camera again — or upload photos instead.';
+  }
   return switching ? `Could not switch camera: ${(err as Error).message}` : `Camera unavailable: ${(err as Error).message}`;
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 }
 
 function openVideo(constraints: MediaTrackConstraints): Promise<MediaStream> {
   return navigator.mediaDevices.getUserMedia({ video: { ...VIDEO_SIZE, ...constraints }, audio: false });
+}
+
+function isCameraBusy(err: unknown): boolean {
+  const name = (err as DOMException).name;
+  return name === 'NotReadableError' || name === 'AbortError' || name === 'TrackStartError';
+}
+
+/** Local turn check so we do not upload pose frames when the head is clearly on the wrong side. */
+function localPoseHint(target: PoseId, canvas: HTMLCanvasElement, mirrored: boolean): { ok: boolean; nudge: string } | null {
+  if (target === 'up' || target === 'down') return null;
+  const raw = estimateGuideYaw(canvas);
+  if (raw == null) return null;
+  // Preview is mirrored for the front camera; flip so "your left" matches the on-screen command.
+  const yaw = mirrored ? -raw : raw;
+  if (target === 'straight') {
+    if (Math.abs(yaw) > 0.18) return { ok: false, nudge: yaw < 0 ? 'Look straight — turn a little to your right' : 'Look straight — turn a little to your left' };
+    return { ok: true, nudge: 'Hold still' };
+  }
+  if (target === 'left') {
+    if (yaw > -0.06) return { ok: false, nudge: 'Turn your head a little to your left' };
+    return { ok: true, nudge: 'Hold still' };
+  }
+  if (target === 'right') {
+    if (yaw < 0.06) return { ok: false, nudge: 'Turn your head a little to your right' };
+    return { ok: true, nudge: 'Hold still' };
+  }
+  return null;
 }
 
 function denied(err: unknown): boolean {
@@ -119,7 +158,7 @@ function mirrorFor(stream: MediaStream, requested: Facing): boolean {
   return requested === 'user';
 }
 
-async function acquireCamera(facing: Facing, previousId?: string): Promise<MediaStream> {
+async function acquireCameraOnce(facing: Facing, previousId?: string): Promise<MediaStream> {
   if (!previousId) {
     try {
       return await openVideo({ facingMode: { ideal: facing } });
@@ -143,6 +182,21 @@ async function acquireCamera(facing: Facing, previousId?: string): Promise<Media
   const hint = facing === 'environment' ? /back|rear|environment/i : /front|user|face/i;
   const preferred = devices.find((device) => hint.test(device.label)) ?? devices[0];
   return openVideo({ deviceId: { exact: preferred.deviceId } });
+}
+
+/** Retry when Android/browser still holds the camera after another app closed. */
+async function acquireCamera(facing: Facing, previousId?: string): Promise<MediaStream> {
+  let lastErr: unknown;
+  for (const delay of CAMERA_RETRY_DELAYS_MS) {
+    if (delay) await sleep(delay);
+    try {
+      return await acquireCameraOnce(facing, previousId);
+    } catch (err) {
+      lastErr = err;
+      if (denied(err) || !isCameraBusy(err)) throw err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new DOMException('The camera is in use by another app. Close it and try again.', 'NotReadableError');
 }
 
 interface PoseReading {
@@ -171,6 +225,7 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
   const [switching, setSwitching] = useState(false);
   const [camError, setCamError] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
   const [live, setLive] = useState<LocalQuality | null>(null);
   const [phase, setPhase] = useState<AutoPhase>({ kind: 'align', text: 'Align your face' });
   const [mobile, setMobile] = useState(false);
@@ -256,7 +311,9 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
           const still = motion <= STILL_MAX;
           const reading = poseRef.current;
           const commanded = POSES[Math.min(taken, POSES.length - 1)].id;
-          const poseFresh = Boolean(reading && reading.target === commanded && now - reading.at < POSE_FRESH_MS);
+          const freshWindow = reading?.matched ? POSE_MATCHED_FRESH_MS : POSE_FRESH_MS;
+          const poseFresh = Boolean(reading && reading.target === commanded && now - reading.at < freshWindow);
+          const localHint = clear ? localPoseHint(commanded, canvas, facingRef.current === 'user') : null;
           if (taken >= AUTO_SHOTS) {
             stableSince = 0;
             publish({ kind: 'done' });
@@ -266,6 +323,9 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
           } else if (!clear) {
             stableSince = 0;
             publish({ kind: 'align', text: quality?.warnings[0] ?? 'Checking…' });
+          } else if (localHint && !localHint.ok) {
+            stableSince = 0;
+            publish({ kind: 'align', text: localHint.nudge });
           } else if (!poseFresh || !reading) {
             stableSince = 0;
             publish({ kind: 'align', text: 'Checking the turn…' });
@@ -313,10 +373,20 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
     let busy = false;
     const tick = async () => {
       if (stopped || busy || imagesRef.current.length >= AUTO_SHOTS) return;
+      if (performance.now() < pauseUntilRef.current) return;
       const canvas = canvasRef.current;
       if (!canvas?.width) return;
-      busy = true;
+      const quality = assessCanvasGuide(canvas);
+      if (!quality || quality.warnings.length) return;
       const target = POSES[Math.min(imagesRef.current.length, POSES.length - 1)].id;
+      const localHint = localPoseHint(target, canvas, facingRef.current === 'user');
+      if (localHint && !localHint.ok) {
+        poseRef.current = { target, matched: false, nudge: localHint.nudge, at: performance.now() };
+        return;
+      }
+      const existing = poseRef.current;
+      if (existing && existing.target === target && existing.matched && performance.now() - existing.at < POSE_MATCHED_FRESH_MS) return;
+      busy = true;
       try {
         const blob = await guideJpeg(canvas);
         if (!blob || stopped) return;
@@ -326,12 +396,13 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
         const { data } = await api.post<{ matched: boolean; nudge: string }>('/persons/pose-guide', form);
         if (!stopped) poseRef.current = { target, matched: data.matched, nudge: data.nudge, at: performance.now() };
       } catch {
-        if (!stopped) poseRef.current = { target, matched: false, nudge: 'Pose check unavailable — use Capture now', at: performance.now() };
+        // Prefer local readiness over blocking enroll when the pose service is down.
+        if (!stopped) poseRef.current = { target, matched: Boolean(localHint?.ok ?? target === 'straight'), nudge: localHint?.ok || target === 'straight' ? 'Hold still' : 'Pose check unavailable — use Capture now', at: performance.now() };
       } finally {
         busy = false;
       }
     };
-    const id = window.setInterval(() => void tick(), 380);
+    const id = window.setInterval(() => void tick(), POSE_POLL_MS);
     return () => {
       stopped = true;
       window.clearInterval(id);
@@ -433,23 +504,31 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
   }
 
   async function startCamera() {
+    if (starting || switchingRef.current) return;
+    setStarting(true);
     setCamError(null);
     setFileError(null);
     setLive(null);
     setPhase({ kind: 'align', text: 'Align your face' });
     if (!navigator.mediaDevices?.getUserMedia) {
       setCamError('This browser cannot access cameras. Use HTTPS (or localhost) and a modern browser, or upload photos instead.');
+      setStarting(false);
       return;
     }
+    // Release any prior track so Android can hand the camera back after WhatsApp/other apps.
+    stopCamera();
+    await sleep(350);
     try {
       applyStream(await acquireCamera(facingRef.current), facingRef.current);
     } catch (err) {
       setCamError(cameraErrorMessage(err));
+    } finally {
+      setStarting(false);
     }
   }
 
   async function switchCamera() {
-    if (switchingRef.current) return;
+    if (switchingRef.current || starting) return;
     const next: Facing = facingRef.current === 'user' ? 'environment' : 'user';
     const previousId = stream?.getVideoTracks()[0]?.getSettings().deviceId;
     const previousFacing = facingRef.current;
@@ -458,7 +537,8 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
     setFileError(null);
     pauseUntilRef.current = performance.now() + 2000;
     stream?.getTracks().forEach((track) => track.stop());
-    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    setStream(null);
+    await sleep(400);
     try {
       applyStream(await acquireCamera(next, previousId), next);
       setLive(null);
@@ -648,12 +728,19 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
             </button>
           )}
           <CameraOff className={fullscreen ? 'h-14 w-14 text-ink-300' : 'h-8 w-8 text-ink-400'} />
-          <p className={fullscreen ? 'max-w-xs text-base text-ink-100' : 'text-sm text-ink-300'}>{camError ?? 'Camera is off'}</p>
-          {fullscreen && <p className="max-w-xs text-sm text-ink-300">This capture uses the full screen so the face is large enough to align and recognize.</p>}
-          <Button onClick={() => void startCamera()} icon={<Camera className="h-4 w-4" />}>
-            Start camera
+          <p className={fullscreen ? 'max-w-xs text-base text-ink-100' : 'text-sm text-ink-300'}>{starting ? 'Opening camera…' : camError ?? 'Camera is off'}</p>
+          {camError && (
+            <ul className={`${fullscreen ? 'max-w-xs text-sm' : 'max-w-sm text-xs'} list-disc space-y-1 pl-4 text-left text-ink-300`}>
+              <li>Close WhatsApp, Instagram, video calls, and other camera apps</li>
+              <li>Close other browser tabs that may be using the camera</li>
+              <li>Wait a second, then tap Start camera again</li>
+            </ul>
+          )}
+          {fullscreen && !camError && <p className="max-w-xs text-sm text-ink-300">This capture uses the full screen so the face is large enough to align and recognize.</p>}
+          <Button onClick={() => void startCamera()} loading={starting} disabled={starting} icon={<Camera className="h-4 w-4" />}>
+            {starting ? 'Starting…' : camError ? 'Retry camera' : 'Start camera'}
           </Button>
-          {fullscreen && (
+          {(fullscreen || camError) && (
             <button type="button" onClick={() => setMode('upload')} className="text-sm text-ink-300 underline-offset-2 hover:underline">
               Upload photos instead
             </button>
@@ -747,7 +834,7 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
           ))}
         </ul>
       )}
-      <p className="text-xs text-ink-400">Follow the five commands: straight, left, right, chin up, then chin down. The camera takes each photo only when the face matches that command and holds still. The saved photo is only the area inside the guide. Photos of different people, a second face, blur, tilt, or a poor match to someone already enrolled are rejected. Only encrypted templates are stored.</p>
+      <p className="text-xs text-ink-400">Fill the oval in even light, eyes on the line. The phone pre-checks blur, brightness, and fill before asking the server for a pose check — this keeps enrollment sharper and reduces server load. Photos auto-capture for straight, left, right, chin up, then chin down. Only encrypted templates are stored.</p>
     </div>
   );
 }

@@ -2,7 +2,8 @@
 
 import { ArrowLeftRight, Search, UserPlus, Users } from 'lucide-react';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Suspense, useState } from 'react';
 import { EnrollmentBadge, PersonStatusBadge } from '@/components/badges';
 import { PersonForm } from '@/components/persons/PersonForm';
 import { RequirePermission } from '@/components/RequirePermission';
@@ -49,7 +50,8 @@ function PersonsView() {
   const { can, user } = useAuth();
   const tenant = user?.organization?.organizationType === 'HOSTEL';
   const notify = useToast();
-  const [search, setSearch] = useState('');
+  const searchParams = useSearchParams();
+  const [search, setSearch] = useState(() => searchParams.get('search')?.trim() ?? '');
   const [tab, setTab] = useState<Tab>('ACTIVE');
   const [enrollment, setEnrollment] = useState('');
   const [page, setPage] = useState(1);
@@ -315,7 +317,9 @@ function PersonsView() {
 export default function PersonsPage() {
   return (
     <RequirePermission permission="persons:view">
-      <PersonsView />
+      <Suspense fallback={<LoadingBlock />}>
+        <PersonsView />
+      </Suspense>
     </RequirePermission>
   );
 }

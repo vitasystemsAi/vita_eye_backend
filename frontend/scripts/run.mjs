@@ -1,5 +1,5 @@
 // Cross-platform launcher: `node scripts/run.mjs dev|start` on FRONTEND_HOST:FRONTEND_PORT
-// (default 127.0.0.1:3001; browsers only allow webcam access on localhost or HTTPS anyway).
+// (default 127.0.0.1:3002; browsers only allow webcam access on localhost or HTTPS anyway).
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,7 +19,7 @@ function fromEnvFile(file, key) {
   }
 }
 
-const port = process.env.FRONTEND_PORT ?? fromEnvFile('.env.local', 'FRONTEND_PORT') ?? fromEnvFile('.env', 'FRONTEND_PORT') ?? '3001';
+const port = process.env.FRONTEND_PORT ?? fromEnvFile('.env.local', 'FRONTEND_PORT') ?? fromEnvFile('.env', 'FRONTEND_PORT') ?? '3002';
 const host = process.env.FRONTEND_HOST ?? fromEnvFile('.env.local', 'FRONTEND_HOST') ?? fromEnvFile('.env', 'FRONTEND_HOST') ?? '127.0.0.1';
 const [cmd = 'dev', ...rest] = process.argv.slice(2);
 const nextBin = path.join(root, 'node_modules', 'next', 'dist', 'bin', 'next');

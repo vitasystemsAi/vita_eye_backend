@@ -1,7 +1,8 @@
 'use client';
 
 import { zodResolver } from '@hookform/resolvers/zod';
-import { CheckCircle2, ScanFace, ShieldCheck, XCircle } from 'lucide-react';
+import { CheckCircle2, ExternalLink, ScanFace, ShieldCheck, XCircle } from 'lucide-react';
+import Link from 'next/link';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -29,14 +30,32 @@ const LEGAL_BASIS: Array<[FormValues['legalBasis'], string]> = [
   ['OTHER', 'Other (documented in the reference)'],
 ];
 
+type DuplicateHit = {
+  matchedPersonId?: string;
+  referenceId?: string;
+  similarity?: number;
+};
+
+function parseDuplicate(err: ApiError): DuplicateHit {
+  const d = err.details as { matchedPersonId?: string; similarity?: number } | undefined;
+  const fromMessage = err.message.match(/\(([^)]+)\)/)?.[1]?.trim();
+  return {
+    matchedPersonId: d?.matchedPersonId,
+    referenceId: fromMessage && fromMessage !== 'unknown reference' ? fromMessage : undefined,
+    similarity: d?.similarity,
+  };
+}
+
 export function EnrollmentPanel({ person, onEnrolled }: { person: PersonDetail; onEnrolled: (p: PersonDetail) => void }) {
   const notify = useToast();
   const [images, setImages] = useState<CapturedImage[]>([]);
   const [results, setResults] = useState<EnrollImageResult[] | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [duplicate, setDuplicate] = useState<DuplicateHit | null>(null);
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -47,9 +66,11 @@ export function EnrollmentPanel({ person, onEnrolled }: { person: PersonDetail; 
       replaceExisting: false,
     },
   });
+  const consentReference = watch('consentReference');
 
   async function onSubmit(values: FormValues) {
     setServerError(null);
+    setDuplicate(null);
     setResults(null);
     if (!images.length) {
       setServerError('Capture or upload at least one photo.');
@@ -77,10 +98,14 @@ export function EnrollmentPanel({ person, onEnrolled }: { person: PersonDetail; 
       if (err instanceof ApiError) {
         const d = err.details as { results?: EnrollImageResult[]; similarity?: number } | undefined;
         if (d?.results) setResults(d.results);
-        if (err.code === 'DUPLICATE_IDENTITY') setServerError(`${err.message}. The same face cannot be registered under two identities.`);
-        else if (err.code === 'INCONSISTENT_IDENTITY') setServerError(`${err.message} (similarity ${d?.similarity ?? '—'}). Remove photos of other people and try again.`);
-        else if (err.code === 'AI_SERVICE_UNAVAILABLE') setServerError('The recognition service is unavailable. No data was stored; try again shortly.');
-        else setServerError(err.message);
+        if (err.code === 'DUPLICATE_IDENTITY') {
+          setDuplicate(parseDuplicate(err));
+          setServerError('This face already belongs to another registration. The same face cannot be stored under two identities.');
+        } else if (err.code === 'INCONSISTENT_IDENTITY') {
+          setServerError(`${err.message} (similarity ${d?.similarity ?? '—'}). Remove photos of other people and try again.`);
+        } else if (err.code === 'AI_SERVICE_UNAVAILABLE') {
+          setServerError('The recognition service is unavailable. No data was stored; try again shortly.');
+        } else setServerError(err.message);
       } else setServerError('Enrollment failed');
     }
   }
@@ -89,11 +114,23 @@ export function EnrollmentPanel({ person, onEnrolled }: { person: PersonDetail; 
   const holdReason = person.status === 'SUSPENDED'
     ? 'This person is suspended and is not in recognition. Make them active before enrolling biometric data.'
     : 'This person is inactive and is not in recognition. Retrieve them to active before enrolling biometric data.';
+  const consentLooksLikeOtherId =
+    consentReference.trim().length >= 3 &&
+    consentReference.trim().toLowerCase() !== person.referenceId.trim().toLowerCase();
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-6" noValidate>
       {inactive && <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">{holdReason}</p>}
-      <p className="text-sm text-ink-300">Align the face to the guide and keep the eyes level. Each photo is checked against the others and against everyone already enrolled, and monitoring will not attach this name unless that face is the clear match.</p>
+      <div className="rounded-lg border border-ink-700 bg-ink-850/50 px-3 py-2 text-sm text-ink-200">
+        <p>
+          Enrolling face for <span className="font-medium text-ink-50">{person.personName}</span>
+          {' · '}
+          ID <span className="font-mono text-ink-50">{person.referenceId}</span>
+        </p>
+        <p className="mt-1 text-xs text-ink-400">
+          Fill the oval in even light. The device checks quality first; the server only stores templates after pose and identity checks. Consent reference is paperwork only — it does not change whose face is stored.
+        </p>
+      </div>
       <FaceCapture images={images} onChange={setImages} />
 
       <div className="rounded-xl border border-ink-700 bg-ink-850/60 p-4">
@@ -110,10 +147,15 @@ export function EnrollmentPanel({ person, onEnrolled }: { person: PersonDetail; 
               ))}
             </Select>
           </Field>
-          <Field label="Consent / authorization reference" error={errors.consentReference?.message} hint="e.g. signed consent form number or HR policy ID">
+          <Field label="Consent / authorization reference" error={errors.consentReference?.message} hint="e.g. signed consent form number or HR policy ID — not the person ID">
             <Input placeholder="CONSENT-2026-0042" {...register('consentReference')} />
           </Field>
         </div>
+        {consentLooksLikeOtherId && (
+          <p className="mt-2 text-xs text-amber-200/90">
+            Consent reference differs from this person&apos;s ID ({person.referenceId}). That is fine for paperwork, but the face will still be stored under {person.referenceId}.
+          </p>
+        )}
         <label className="mt-4 flex items-start gap-3 text-sm text-ink-200">
           <input type="checkbox" className="mt-0.5 h-4 w-4 accent-blue-600" {...register('consentConfirmed')} />
           <span>
@@ -130,9 +172,49 @@ export function EnrollmentPanel({ person, onEnrolled }: { person: PersonDetail; 
       </div>
 
       {serverError && (
-        <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200" role="alert">
-          {serverError}
-        </p>
+        <div className="space-y-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-3 text-sm text-red-200" role="alert">
+          <p>{serverError}</p>
+          {duplicate && (
+            <div className="space-y-2 rounded-md border border-red-500/20 bg-ink-950/40 px-3 py-2 text-ink-200">
+              <p className="text-xs font-medium tracking-wide text-red-100 uppercase">What to do</p>
+              <ul className="list-disc space-y-1 pl-4 text-xs text-ink-300">
+                <li>
+                  If this is the same person, open the existing registration
+                  {duplicate.referenceId ? (
+                    <>
+                      {' '}
+                      (<span className="font-mono text-ink-100">{duplicate.referenceId}</span>)
+                    </>
+                  ) : null}{' '}
+                  and enroll or replace the face there.
+                </li>
+                <li>If this is a different person, retake clearer photos in even light — a blurry or off-angle shot can falsely match someone else.</li>
+                <li>If the other ID was enrolled by mistake, clear that person&apos;s face templates first, then enroll here.</li>
+              </ul>
+              {duplicate.matchedPersonId && (
+                <Link
+                  href={`/persons/${duplicate.matchedPersonId}`}
+                  className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-300 underline-offset-2 hover:underline"
+                >
+                  Open matched registration{duplicate.referenceId ? ` (${duplicate.referenceId})` : ''}
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </Link>
+              )}
+              {!duplicate.matchedPersonId && duplicate.referenceId && (
+                <Link
+                  href={`/persons?search=${encodeURIComponent(duplicate.referenceId)}`}
+                  className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-300 underline-offset-2 hover:underline"
+                >
+                  Search for {duplicate.referenceId}
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </Link>
+              )}
+              {typeof duplicate.similarity === 'number' && (
+                <p className="text-[11px] text-ink-400">Match score {duplicate.similarity.toFixed(2)} (at or above the known-person threshold).</p>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
       {results && (
