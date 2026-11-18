@@ -16,7 +16,7 @@ from typing import Callable, Optional
 import cv2
 
 from app.models.schemas import Policy
-from app.pipelines.capture import open_working_capture
+from app.pipelines.capture import open_working_capture, public_stream_url
 from app.pipelines.recognition import RecognitionPipeline
 from app.services.backend_client import BackendClient
 
@@ -60,7 +60,7 @@ def preview_jpeg(frame, faces: list[dict]) -> Optional[tuple[bytes, list[int], l
 
 
 def test_stream(url: str) -> dict:
-    cap, _resolved, error = open_working_capture(url)
+    cap, resolved, error = open_working_capture(url)
     if cap is None:
         return {"ok": False, "error": error or "Unable to connect to stream"}
     try:
@@ -68,7 +68,11 @@ def test_stream(url: str) -> dict:
         if not ok or frame is None:
             return {"ok": False, "error": "Stream opened but no frame could be read"}
         height, width = frame.shape[:2]
-        return {"ok": True, "width": int(width), "height": int(height)}
+        result = {"ok": True, "width": int(width), "height": int(height)}
+        opened = public_stream_url(resolved or url)
+        if opened != public_stream_url(url):
+            result["streamUrl"] = opened
+        return result
     finally:
         cap.release()
 

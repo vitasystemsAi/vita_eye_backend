@@ -280,7 +280,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
     setTesting(true);
     setTestResult(null);
     try {
-      const { data } = await api.post<{ ok: boolean; tested: boolean; error?: string; width?: number; height?: number }>(
+      const { data } = await api.post<{ ok: boolean; tested: boolean; error?: string; width?: number; height?: number; streamUrl?: string }>(
         '/cameras/test-connection',
         {
           cameraId: camera?.id,
@@ -292,9 +292,22 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
         },
         { signal: AbortSignal.timeout(50000) },
       );
+      if (data.ok && data.streamUrl) {
+        if (v.cameraType === 'LAN') {
+          const parts = splitLan(data.streamUrl);
+          setValue('lanProtocol', parts.lanProtocol);
+          setValue('lanHost', parts.lanHost);
+          setValue('lanPort', parts.lanPort);
+          setValue('lanPath', parts.lanPath);
+        } else if (v.cameraType === 'LAN_PORT') {
+          setValue('lanPortUrl', data.streamUrl, { shouldValidate: true });
+        } else {
+          setValue('streamUrl', data.streamUrl);
+        }
+      }
       setTestResult(
         data.ok
-          ? { ok: true, text: data.width ? `Connected. Received a ${data.width}×${data.height} frame.` : 'Connected.' }
+          ? { ok: true, text: data.streamUrl ? `Connected on ${data.streamUrl}. That path will be saved.` : data.width ? `Connected. Received a ${data.width}×${data.height} frame.` : 'Connected.' }
           : { ok: false, text: data.error || 'The stream could not be opened.' },
       );
     } catch (err) {
@@ -445,9 +458,23 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
       {type === 'LAN' && (
         <div className="space-y-4 rounded-xl border border-ink-700 bg-ink-850/60 p-4">
           <p className="text-xs text-ink-400">
-            The camera’s Ethernet cable goes to your LAN. Vita Eye opens it directly from the server using the IP, port, and path. The address must be inside the approved camera networks.
+            The camera’s Ethernet cable goes to your LAN. Enter the IP from the camera website. CP Plus cameras use the same username and password as that website. Vita Eye selects the CP Plus stream path when the usual path is not found.
           </p>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Field label="Camera brand" hint="CP Plus fills the stream path those cameras publish.">
+              <Select
+                defaultValue=""
+                onChange={(event) => {
+                  if (event.target.value !== 'cpplus') return;
+                  setValue('lanProtocol', 'rtsp');
+                  setValue('lanPort', '554');
+                  setValue('lanPath', '/cam/realmonitor?channel=1&subtype=1');
+                }}
+              >
+                <option value="">General</option>
+                <option value="cpplus">CP Plus</option>
+              </Select>
+            </Field>
             <Field label="Protocol" error={errors.lanProtocol?.message} hint="RTSP on port 554 is the usual LAN camera. HTTP is for an MJPEG page.">
               <Select
                 {...lanProtocolField}
@@ -473,7 +500,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
             <Field label="Port" error={errors.lanPort?.message}>
               <Input {...register('lanPort')} className="font-mono" inputMode="numeric" placeholder="554" />
             </Field>
-            <Field label="Stream path" error={errors.lanPath?.message} hint="Common paths: /stream1, /Streaming/Channels/101, /video">
+            <Field label="Stream path" error={errors.lanPath?.message} hint="CP Plus: /cam/realmonitor?channel=1&subtype=1. Others: /stream1 or /Streaming/Channels/101">
               <Input {...register('lanPath')} className="font-mono" placeholder="/stream1" autoComplete="off" />
             </Field>
           </div>
@@ -504,7 +531,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
             {lanNotice && <p className="text-xs text-amber-300">{lanNotice}</p>}
           </div>
           <p className="text-xs text-ink-400">
-            Plug the camera into this computer’s Ethernet port. Vita Eye finds its address and opens the stream. You do not type an IP. The direct-IP LAN option is unchanged.
+            Plug the camera into this computer’s Ethernet port, or leave it on the same network. Detect lists CP Plus cameras from their website and RTSP port. Use the same username and password as the camera website. The direct-IP LAN option is unchanged.
           </p>
           {camera?.streamReference && !lanPortUrl && <p className="text-xs text-ink-400">Current stream: {camera.streamReference}</p>}
           {errors.lanPortUrl && <p className="text-xs text-red-400">{errors.lanPortUrl.message}</p>}

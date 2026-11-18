@@ -425,7 +425,8 @@ def _rtsp_reply_message(host: str, path: str, code: int, reason: str, username: 
     if code == 404:
         return (
             f"The camera at {host} is online, but the path {path} was not found ({via} 404). "
-            "Use the camera's real stream path, such as /video/live or /Streaming/Channels/101."
+            "CP Plus cameras use /cam/realmonitor?channel=1&subtype=1. "
+            "Other cameras often use /Streaming/Channels/101."
             + switch
         )
     if 200 <= code < 300:
@@ -470,7 +471,46 @@ def explain_connect_failure(url: str) -> str:
     return f"{host} port {port} is open, but no video frame arrived for {path}."
 
 
-def _open_rtsp(url: str):
+# Tried when the typed path is missing. CP Plus (Dahua) is first: the substream is usually H.264.
+VENDOR_RTSP_PATHS = (
+    "/cam/realmonitor?channel=1&subtype=1",
+    "/cam/realmonitor?channel=1&subtype=0",
+    "/Streaming/Channels/102",
+    "/Streaming/Channels/101",
+    "/h264/ch1/main/av_stream",
+    "/stream1",
+)
+
+
+def _replace_rtsp_path(url: str, path: str) -> str:
+    parsed = urlparse(url)
+    query = ""
+    if "?" in path:
+        path, query = path.split("?", 1)
+    return urlunparse(parsed._replace(path=path or "/", query=query))
+
+
+def rtsp_candidates(url: str) -> list[str]:
+    """The address the operator typed, then the paths CP Plus and other LAN cameras actually publish."""
+    found = [url]
+    for path in VENDOR_RTSP_PATHS:
+        alt = _replace_rtsp_path(url, path)
+        if alt not in found:
+            found.append(alt)
+    return found
+
+
+def public_stream_url(url: str) -> str:
+    """Stream address safe to store and show. The password is never included."""
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    netloc = f"[{host}]" if ":" in host else host
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse((parsed.scheme, netloc, parsed.path, "", parsed.query, ""))
+
+
+def _open_rtsp_transports(url: str):
     """TCP first. Low-delay flags keep the live picture from sitting in FFmpeg's queue."""
     live = "stimeout;5000000|max_delay;0|fflags;nobuffer|flags;low_delay"
     transports = ("tcp",) if urlparse(url).scheme == "rtsps" else ("tcp", "udp")
@@ -480,6 +520,52 @@ def _open_rtsp(url: str):
             return cap, url, None
         cap.release()
     return None, url, explain_connect_failure(url)
+
+
+def _login_rejected(message: Optional[str]) -> bool:
+    if not message:
+        return False
+    return "refused the login" in message or "requires a username and password" in message
+
+
+def _open_rtsp(url: str):
+    """Open the typed path. A 404 is the usual CP Plus case: /stream1 does not exist, the realmonitor path does."""
+    parsed = urlparse(url)
+    host, port = _host_port(parsed)
+    tcp = _tcp_failure(host, port)
+    if tcp:
+        return None, url, tcp[:500]
+    last_auth = None
+    last_other = None
+    auth_attempts = 0
+    for candidate in rtsp_candidates(url):
+        status = _rtsp_status(candidate, host, port)
+        if status is None and parsed.scheme == "rtsp":
+            status = _rtsps_status(candidate, host, port)
+        if status is None:
+            if candidate != url:
+                continue
+            return _open_rtsp_transports(url)
+        code, _reason = status
+        if code == 404:
+            path = urlparse(candidate).path or "/"
+            if urlparse(candidate).query:
+                path += "?" + urlparse(candidate).query
+            last_other = _rtsp_reply_message(host, path, code, _reason, parsed.username, parsed.scheme == "rtsps")
+            continue
+        cap, used, err = _open_rtsp_transports(candidate)
+        if cap is not None:
+            if candidate != url:
+                log.info("Using RTSP path %s for %s", urlparse(candidate).path, host)
+            return cap, used, None
+        if _login_rejected(err):
+            last_auth = err
+            auth_attempts += 1
+            if auth_attempts >= 2:
+                break
+            continue
+        last_other = err
+    return None, url, (last_auth or last_other or explain_connect_failure(url))[:500]
 
 
 def _open_http_picture(url: str, kind: str):

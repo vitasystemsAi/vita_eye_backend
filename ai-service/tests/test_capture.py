@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import cv2
 import numpy as np
 
-from app.pipelines.capture import open_working_capture, stream_candidates
+from app.pipelines.capture import open_working_capture, rtsp_candidates
 
 JPEG = cv2.imencode(".jpg", np.full((48, 64, 3), 40, dtype=np.uint8))[1].tobytes()
 
@@ -68,6 +68,13 @@ def test_root_page_opens_the_video_feed():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_cp_plus_path_is_tried_when_the_typed_path_is_generic():
+    found = rtsp_candidates("rtsp://user:secret@192.168.1.64:554/stream1")
+    assert found[0].endswith("/stream1")
+    assert any(item.endswith("/cam/realmonitor?channel=1&subtype=1") and "secret" in item for item in found)
+    assert all("192.168.1.64" in item for item in found)
 
 
 def test_offline_host_fails_without_trying_every_path():

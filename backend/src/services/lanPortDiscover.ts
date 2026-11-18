@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import dgram from 'node:dgram';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 
@@ -125,10 +126,88 @@ function discoverOnvif(bindAddress: string, waitMs: number): Promise<string[]> {
   });
 }
 
-/**
- * Finds cameras on this computer's own LAN adapters. A camera plugged straight into the
- * Ethernet port answers ONVIF discovery or has RTSP/HTTP open. Nothing is typed by hand.
- */
+const RTSP_PATHS = [
+  { path: '/cam/realmonitor?channel=1&subtype=1', name: 'CP Plus' },
+  { path: '/cam/realmonitor?channel=1&subtype=0', name: 'CP Plus' },
+  { path: '/Streaming/Channels/102', name: 'IP camera' },
+  { path: '/Streaming/Channels/101', name: 'IP camera' },
+  { path: '/stream1', name: 'LAN camera' },
+];
+
+function rtspDescribe(ip: string, path: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: ip, port: 554, family: 4 });
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(code);
+    };
+    socket.setTimeout(900);
+    socket.once('timeout', () => finish(null));
+    socket.once('error', () => finish(null));
+    let buf = '';
+    socket.on('data', (chunk: Buffer) => {
+      buf += chunk.toString('latin1');
+      const code = /^RTSP\/\d\.\d (\d{3})/.exec(buf.split('\r\n', 1)[0] ?? '');
+      if (code?.[1]) finish(Number(code[1]));
+    });
+    socket.once('connect', () => {
+      socket.write(
+        `DESCRIBE rtsp://${ip}:554${path} RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\nUser-Agent: VitaEye\r\n\r\n`,
+      );
+    });
+  });
+}
+
+/** 200 or 401 means this path exists. CP Plus answers 401 until the website login is sent. */
+async function chooseRtsp(ip: string): Promise<DiscoveredLanCamera | null> {
+  if (!(await portOpen(ip, 554, 450))) return null;
+  for (const candidate of RTSP_PATHS) {
+    const code = await rtspDescribe(ip, candidate.path);
+    if (code === 200 || code === 401 || code === 403) {
+      return { ip, name: `${candidate.name} ${ip}`, streamUrl: `rtsp://${ip}:554${candidate.path}`, source: 'rtsp' };
+    }
+  }
+  return { ip, name: `LAN camera ${ip}`, streamUrl: `rtsp://${ip}:554/stream1`, source: 'rtsp' };
+}
+
+function httpCameraKind(ip: string): Promise<'cpplus' | 'hikvision' | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (kind: 'cpplus' | 'hikvision' | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(kind);
+    };
+    const req = http.get(
+      { host: ip, port: 80, path: '/', timeout: 800, family: 4, headers: { 'User-Agent': 'VitaEye', Connection: 'close' } },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+          if (Buffer.concat(chunks).length > 2500) res.destroy();
+        });
+        const classify = () => {
+          const text = `${res.headers.server ?? ''}\n${Buffer.concat(chunks).toString('latin1')}`.toLowerCase();
+          if (/cp\s*plus|cpplus|dahua|web_caps|rpc2|\/cap\.js|jscore/.test(text)) finish('cpplus');
+          else if (/hikvision/.test(text)) finish('hikvision');
+          else finish(null);
+        };
+        res.on('end', classify);
+        res.on('error', () => finish(null));
+        res.on('close', classify);
+      },
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      finish(null);
+    });
+    req.on('error', () => finish(null));
+  });
+}
 export async function discoverLanPortCameras(): Promise<DiscoveredLanCamera[]> {
   const interfaces = ipv4Interfaces();
   const byIp = new Map<string, DiscoveredLanCamera>();
@@ -139,19 +218,23 @@ export async function discoverLanPortCameras(): Promise<DiscoveredLanCamera[]> {
 
   const onvif = (await Promise.all(interfaces.map((address) => discoverOnvif(address, 1200).catch(() => [] as string[])))).flat();
   for (const ip of onvif) {
-    remember({ ip, name: `LAN camera ${ip}`, streamUrl: `rtsp://${ip}:554/stream1`, source: 'onvif' });
+    remember((await chooseRtsp(ip)) ?? { ip, name: `LAN camera ${ip}`, streamUrl: `rtsp://${ip}:554/stream1`, source: 'onvif' });
   }
 
   const hosts = [...new Set(interfaces.flatMap(hostsOnSubnet))];
   await eachLimited(hosts, 48, async (ip) => {
     if (byIp.has(ip)) return;
-    if (await portOpen(ip, 554, 220)) {
-      remember({ ip, name: `LAN camera ${ip}`, streamUrl: `rtsp://${ip}:554/stream1`, source: 'rtsp' });
+    const chosen = await chooseRtsp(ip);
+    if (chosen) {
+      remember(chosen);
       return;
     }
-    // Port 80 is only a camera signal on a direct cable (link-local). An office LAN has many web devices.
-    if (ip.startsWith('169.254.') && (await portOpen(ip, 80, 180))) {
-      remember({ ip, name: `LAN camera ${ip}`, streamUrl: `http://${ip}/video`, source: 'http' });
+    if (!(await portOpen(ip, 80, 200))) return;
+    const kind = await httpCameraKind(ip);
+    if (kind === 'cpplus') {
+      remember({ ip, name: `CP Plus ${ip}`, streamUrl: `rtsp://${ip}:554/cam/realmonitor?channel=1&subtype=1`, source: 'http' });
+    } else if (kind === 'hikvision') {
+      remember({ ip, name: `IP camera ${ip}`, streamUrl: `rtsp://${ip}:554/Streaming/Channels/101`, source: 'http' });
     }
   });
 
