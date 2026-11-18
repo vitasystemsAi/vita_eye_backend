@@ -45,6 +45,11 @@
   .input {
     @apply w-full rounded-lg border border-ink-600 bg-ink-850 px-3 py-2 text-sm text-ink-100 placeholder:text-ink-400 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 disabled:opacity-60;
   }
+  /* The password field has its own show/hide button. Hide Edge and IE's extra eye. */
+  .input[type='password']::-ms-reveal,
+  .input[type='password']::-ms-clear {
+    display: none;
+  }
   .label {
     @apply mb-1.5 block text-xs font-medium tracking-wide text-ink-300 uppercase;
   }

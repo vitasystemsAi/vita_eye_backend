@@ -4,7 +4,7 @@ import * as c from '../controllers/persons.controller';
 import { authenticate, requirePermission, restoreTenant } from '../middleware/auth';
 import { sensitiveLimiter } from '../middleware/rateLimit';
 
-// Enrollment images are processed in memory and never written to disk (data minimisation).
+// Enrollment images stay in memory until a template is accepted, then an encrypted copy is kept for the registration.
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 5 },
@@ -16,6 +16,7 @@ r.use(authenticate);
 r.get('/', requirePermission('persons:view'), c.list);
 r.post('/pose-guide', requirePermission('persons:enroll'), upload.single('image'), c.poseGuide);
 r.post('/', requirePermission('persons:manage'), c.create);
+r.get('/:id/faces/:templateId', requirePermission('persons:view'), c.facePhoto);
 r.get('/:id', requirePermission('persons:view'), c.get);
 r.patch('/:id', requirePermission('persons:manage'), c.update);
 r.post('/:id/enroll', sensitiveLimiter, requirePermission('persons:enroll'), upload.array('images', 5), restoreTenant, c.enroll);

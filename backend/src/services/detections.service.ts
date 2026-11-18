@@ -134,7 +134,7 @@ export async function recordEvents(organizationId: string, camera: Camera, event
 
       const full = await DetectionEvent.findByPk(event.id, {
         include: [
-          { model: Camera, as: 'camera' },
+          { model: Camera, as: 'camera', paranoid: false },
           { model: RegisteredPerson, as: 'person', paranoid: false },
           { model: EventEvidence, as: 'evidence' },
         ],
@@ -201,7 +201,7 @@ function buildQuery(ctx: AuthContext, f: EventFilters) {
     ];
   }
   const include = [
-    { model: Camera, as: 'camera', where: cameraWhere as WhereOptions<Camera>, required: true },
+    { model: Camera, as: 'camera', where: cameraWhere as WhereOptions<Camera>, required: true, paranoid: false },
     { model: RegisteredPerson, as: 'person', paranoid: false, required: false },
     { model: EventEvidence, as: 'evidence', required: false, attributes: ['id', 'evidenceType', 'expiresAt'] },
   ];
@@ -239,7 +239,7 @@ async function loadEvent(ctx: AuthContext, id: string) {
   const e = await DetectionEvent.findOne({
     where: { id, organizationId: ctx.organizationId },
     include: [
-      { model: Camera, as: 'camera' },
+      { model: Camera, as: 'camera', paranoid: false },
       { model: RegisteredPerson, as: 'person', paranoid: false },
       { model: EventEvidence, as: 'evidence' },
       { model: EventNote, as: 'notes', include: [{ model: User, as: 'author', attributes: ['id', 'name'] }] },
@@ -294,7 +294,7 @@ export async function review(
   await sequelize.transaction(async (transaction) => {
     const e = await DetectionEvent.findOne({
       where: { id, organizationId: ctx.organizationId },
-      include: [{ model: Camera, as: 'camera' }],
+      include: [{ model: Camera, as: 'camera', paranoid: false }],
       lock: transaction.LOCK.UPDATE,
       transaction,
     });

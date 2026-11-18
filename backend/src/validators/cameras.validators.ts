@@ -32,7 +32,7 @@ const base = {
   samplingFps: z.number().min(0.2).max(15).optional(),
 };
 
-const cameraTypes = ['BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG', 'USB', 'LAN'] as const;
+const cameraTypes = ['BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG', 'USB', 'LAN', 'LAN_PORT'] as const;
 
 export const createCameraSchema = z
   .object({ ...base, cameraType: z.enum(cameraTypes) })
@@ -53,7 +53,7 @@ export const updateCameraSchema = z
 
 export const testDraftSchema = z.object({
   cameraId: z.string().uuid().optional(),
-  cameraType: z.enum(['RTSP', 'ONVIF', 'HTTP_MJPEG', 'LAN']),
+  cameraType: z.enum(['RTSP', 'ONVIF', 'HTTP_MJPEG', 'LAN', 'LAN_PORT']),
   streamUrl: z.string().trim().min(1).max(512),
   username: z.string().max(128).optional().nullable(),
   password: z.string().max(256).optional().nullable(),

@@ -120,7 +120,7 @@ function PersonsView() {
       <PageHeader
         title="Face Registration"
         icon={<Users className="h-5 w-5" />}
-        description={tenant ? 'Tenant face enrollment. Templates are encrypted and never displayed.' : 'Registered persons and their enrollment status. Biometric templates are encrypted and never displayed.'}
+        description={tenant ? 'Tenant face enrollment. Open a registration to see the photos that were added.' : 'Registered persons and their enrollment status. Open a registration to see the photos that were added.'}
         actions={
           <div className="flex flex-wrap gap-2">
             {can('data:export') && (

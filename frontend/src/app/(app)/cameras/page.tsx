@@ -1,20 +1,80 @@
 'use client';
 
 import { Camera as CameraIcon, MoreHorizontal, Pencil, Play, Plus, Power, PlugZap, Square, Trash2, TriangleAlert } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { CameraStatusBadge } from '@/components/badges';
 import { CameraForm, type CameraPayload } from '@/components/cameras/CameraForm';
 import { RequirePermission } from '@/components/RequirePermission';
 import { Badge, Button, Card, EmptyState, ErrorBanner, Input, LoadingBlock, Modal, PageHeader, Select } from '@/components/ui/primitives';
 import { useToast } from '@/components/ui/toast';
-import { ApiError, api, errorMessage } from '@/lib/api';
+import { api, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { fmtRelative } from '@/lib/format';
 import { useApi, useDebounced } from '@/lib/hooks';
 import { useSocketEvent } from '@/lib/socket';
 import { isLocalCamera, type Camera, type CameraStatus } from '@/lib/types';
 
-const TYPE_LABEL: Record<Camera['cameraType'], string> = { BROWSER: 'Browser', USB: 'USB', LAN: 'LAN', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
+const TYPE_LABEL: Record<Camera['cameraType'], string> = { BROWSER: 'Browser', USB: 'USB', LAN: 'LAN', LAN_PORT: 'LAN port', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
+
+function ActionsMenu({ open, onToggle, children }: { open: boolean; onToggle: () => void; children: ReactNode }) {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState<{ top: number; left: number; above: boolean } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const position = () => {
+      const button = buttonRef.current;
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      const height = menuRef.current?.offsetHeight ?? 168;
+      const above = rect.bottom + height + 8 > window.innerHeight && rect.top > height + 8;
+      setPlace({ top: above ? rect.top - 4 : rect.bottom + 4, left: rect.right, above });
+    };
+    position();
+    window.addEventListener('resize', position);
+    window.addEventListener('scroll', position, true);
+    return () => {
+      window.removeEventListener('resize', position);
+      window.removeEventListener('scroll', position, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      onToggle();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onToggle();
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open, onToggle]);
+
+  return (
+    <>
+      <Button ref={buttonRef} size="sm" variant="ghost" aria-label="More actions" aria-expanded={open} onClick={onToggle} icon={<MoreHorizontal className="h-4 w-4" />} />
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-50 w-48 overflow-hidden rounded-lg border border-ink-700 bg-ink-850 py-1 shadow-xl"
+          style={{ top: place?.top ?? -9999, left: place?.left ?? -9999, transform: place?.above ? 'translate(-100%, -100%)' : 'translateX(-100%)' }}
+        >
+          {children}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
 
 function CamerasView() {
   const { can } = useAuth();
@@ -96,15 +156,11 @@ function CamerasView() {
     setBusy(`${deleting.id}:delete`);
     try {
       await api.delete(`/cameras/${deleting.id}`);
-      notify('success', 'Camera deleted');
+      notify('success', 'Camera deleted', 'Recorded events and evidence were kept.');
       setDeleting(null);
       void reload();
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        notify('warning', 'Cannot delete', 'This camera has recorded events. Click Deactivate in the dialog to preserve the audit trail.');
-      } else {
-        notify('error', 'Delete failed', errorMessage(err));
-      }
+      notify('error', 'Delete failed', errorMessage(err));
     } finally {
       setBusy(null);
     }
@@ -115,7 +171,7 @@ function CamerasView() {
       <PageHeader
         title="Camera Management"
         icon={<CameraIcon className="h-5 w-5" />}
-        description="USB and USB-C cameras open on the computer the cable is plugged into. LAN-port cameras are reached directly by IP. RTSP, ONVIF, and MJPEG streams are ingested on the server."
+        description="USB and USB-C cameras open on the computer the cable is plugged into. LAN direct IP cameras are opened from an address you type. LAN port cameras are found automatically on this computer, the same way a USB camera is selected. RTSP, ONVIF, and MJPEG streams are ingested on the server."
         actions={can('cameras:manage') && <Button icon={<Plus className="h-4 w-4" />} onClick={() => setEditing('new')}>Add camera</Button>}
       />
       <Card>
@@ -204,22 +260,17 @@ function CamerasView() {
                           )
                         )}
                         {can('cameras:manage') && (
-                          <div className="relative">
-                            <Button size="sm" variant="ghost" aria-label="More actions" onClick={() => setMenu(menu === c.id ? null : c.id)} icon={<MoreHorizontal className="h-4 w-4" />} />
-                            {menu === c.id && (
-                              <div className="absolute right-0 z-20 mt-1 w-48 overflow-hidden rounded-lg border border-ink-700 bg-ink-850 py-1 shadow-xl" onMouseLeave={() => setMenu(null)}>
-                                {c.status === 'ERROR' && c.lastError && (
-                                  <MenuItem icon={<TriangleAlert className="h-4 w-4" />} onClick={() => { setMenu(null); setErrorCamera(c); }}>View error</MenuItem>
-                                )}
-                                {!isLocalCamera(c.cameraType) && (
-                                  <MenuItem icon={<PlugZap className="h-4 w-4" />} onClick={() => void run(c, 'test')}>Test connection</MenuItem>
-                                )}
-                                <MenuItem icon={<Pencil className="h-4 w-4" />} onClick={() => { setMenu(null); setEditing(c); }}>Edit</MenuItem>
-                                <MenuItem icon={<Power className="h-4 w-4" />} onClick={() => void run(c, 'toggle')}>{c.isActive ? 'Deactivate' : 'Activate'}</MenuItem>
-                                <MenuItem icon={<Trash2 className="h-4 w-4" />} danger onClick={() => { setMenu(null); setDeleting(c); }}>Delete</MenuItem>
-                              </div>
+                          <ActionsMenu open={menu === c.id} onToggle={() => setMenu(menu === c.id ? null : c.id)}>
+                            {c.status === 'ERROR' && c.lastError && (
+                              <MenuItem icon={<TriangleAlert className="h-4 w-4" />} onClick={() => { setMenu(null); setErrorCamera(c); }}>View error</MenuItem>
                             )}
-                          </div>
+                            {!isLocalCamera(c.cameraType) && (
+                              <MenuItem icon={<PlugZap className="h-4 w-4" />} onClick={() => void run(c, 'test')}>Test connection</MenuItem>
+                            )}
+                            <MenuItem icon={<Pencil className="h-4 w-4" />} onClick={() => { setMenu(null); setEditing(c); }}>Edit</MenuItem>
+                            <MenuItem icon={<Power className="h-4 w-4" />} onClick={() => void run(c, 'toggle')}>{c.isActive ? 'Deactivate' : 'Activate'}</MenuItem>
+                            <MenuItem icon={<Trash2 className="h-4 w-4" />} danger onClick={() => { setMenu(null); setDeleting(c); }}>Delete</MenuItem>
+                          </ActionsMenu>
                         )}
                       </div>
                     </td>
@@ -277,7 +328,7 @@ function CamerasView() {
             Remove <strong>{deleting?.cameraName}</strong>?
           </p>
           <p className="text-ink-400">
-            Prefer <strong className="text-ink-200">Deactivate</strong> when this camera has detections — delete is blocked so the audit trail stays intact.
+            The camera is removed from monitoring. Recorded detections and evidence stay in the event history.
           </p>
         </div>
       </Modal>

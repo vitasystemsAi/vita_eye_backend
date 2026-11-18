@@ -135,7 +135,7 @@ export async function activity(ctx: AuthContext, limit = 12) {
   const events = await DetectionEvent.findAll({
     where: { organizationId: ctx.organizationId },
     include: [
-      { model: Camera, as: 'camera', where: cameraScopeWhere(ctx), required: true },
+      { model: Camera, as: 'camera', where: cameraScopeWhere(ctx), required: true, paranoid: false },
       { model: RegisteredPerson, as: 'person', paranoid: false },
       { model: EventEvidence, as: 'evidence', attributes: ['id', 'evidenceType', 'expiresAt'] },
     ],

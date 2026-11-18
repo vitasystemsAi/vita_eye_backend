@@ -31,7 +31,7 @@ const BROWSER_OFFLINE_AFTER_MS = 45_000;
 /** Cameras whose picture is captured on the operator computer (built-in webcam or a USB / USB-C cable). */
 export const LOCAL_TYPES = new Set(['BROWSER', 'USB']);
 /** Cameras the server opens itself, including a camera plugged into the LAN port and addressed by IP. */
-export const NETWORK_TYPES = new Set(['RTSP', 'ONVIF', 'HTTP_MJPEG', 'LAN']);
+export const NETWORK_TYPES = new Set(['RTSP', 'ONVIF', 'HTTP_MJPEG', 'LAN', 'LAN_PORT']);
 
 export { credentialsAad };
 
@@ -43,11 +43,22 @@ export async function setCameraStatus(camera: Camera, status: CameraStatus, erro
   if (changed) emitToOrg(camera.organizationId, 'camera:status', { cameraId: camera.id, status, error, lastConnectedAt: camera.lastConnectedAt });
 }
 
+/**
+ * A camera plugged straight into the Ethernet port may sit on a link-local address.
+ * Direct-IP LAN cameras keep the global allow and block lists, including the metadata block.
+ */
+export function urlNetworks(type: string): { allowed: ReturnType<typeof parseCidrs>; blocked: ReturnType<typeof parseCidrs> } {
+  if (type !== 'LAN_PORT') return { allowed: cidrs, blocked: blockedCidrs };
+  const blocked = blockedCidrs.filter((cidr) => !(cidr[0].kind() === 'ipv4' && cidr[0].toString() === '169.254.0.0' && cidr[1] === 16));
+  return { allowed: [...cidrs, ...parseCidrs('169.254.0.0/16')], blocked: [...blocked, ...parseCidrs('169.254.169.254/32')] };
+}
+
 /** Builds the authenticated stream URL. Only ever sent to the internal AI service. */
 export async function resolveStreamUrl(cameraId: string): Promise<string> {
   const cam = await Camera.scope('withCredentials').findByPk(cameraId);
   if (!cam?.streamReference) throw AppError.badRequest('Camera has no stream URL');
-  await assertCameraUrlAllowed(cam.streamReference, cam.cameraType, cidrs, blockedCidrs);
+  const nets = urlNetworks(cam.cameraType);
+  await assertCameraUrlAllowed(cam.streamReference, cam.cameraType, nets.allowed, nets.blocked);
   const creds = cam.encryptedCredentials ? JSON.parse(cipher.decryptString(cam.encryptedCredentials, credentialsAad(cam.id))) : null;
   return withCredentials(cam.streamReference, creds);
 }

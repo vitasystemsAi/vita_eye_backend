@@ -6,14 +6,15 @@ import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { EnrollmentBadge, PersonStatusBadge } from '@/components/badges';
 import { EventsTable } from '@/components/events/EventsTable';
+import { EnrolledFaces } from '@/components/persons/EnrolledFaces';
 import { EnrollmentPanel } from '@/components/persons/EnrollmentPanel';
 import { PersonForm } from '@/components/persons/PersonForm';
 import { RequirePermission } from '@/components/RequirePermission';
-import { Badge, Button, Card, ConfirmDialog, ErrorBanner, Input, KeyValue, LoadingBlock, Modal, PageHeader } from '@/components/ui/primitives';
+import { Button, Card, ConfirmDialog, ErrorBanner, Input, KeyValue, LoadingBlock, Modal, PageHeader } from '@/components/ui/primitives';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { fmtDateTime, fmtPercent, humanize } from '@/lib/format';
+import { fmtDateTime, humanize } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import type { EventSummary, PersonDetail, PersonStatus } from '@/lib/types';
 
@@ -157,24 +158,10 @@ function PersonDetailView() {
             />
           </div>
         </Card>
-        <Card title="Face templates" description="Encrypted at rest (AES-256-GCM); never exposed through the API">
-          {p.templates.length === 0 ? (
-            <p className="px-5 py-6 text-sm text-ink-400">No templates enrolled.</p>
-          ) : (
-            <ul className="divide-y divide-ink-800">
-              {p.templates.map((t, i) => (
-                <li key={t.id} className="flex items-center justify-between px-5 py-3 text-sm">
-                  <div>
-                    <p className="font-medium">Template {i + 1}</p>
-                    <p className="text-xs text-ink-400">
-                      {t.modelVersion} · {fmtDateTime(t.createdAt)}
-                    </p>
-                  </div>
-                  <Badge tone={(t.qualityScore ?? 0) >= 0.6 ? 'green' : 'amber'}>Q {fmtPercent(t.qualityScore)}</Badge>
-                </li>
-              ))}
-            </ul>
-          )}
+        <Card title="Enrolled faces" description="Photos added for this registration. The recognition template stays encrypted.">
+          <div className="p-5">
+            <EnrolledFaces personId={p.id} templates={p.templates} />
+          </div>
         </Card>
       </div>
 
@@ -203,7 +190,11 @@ function PersonDetailView() {
         )}
       </Card>
 
-      <Modal open={editing} onClose={() => setEditing(false)} title="Edit registration">
+      <Modal open={editing} onClose={() => setEditing(false)} title="Edit registration" size="lg">
+        <div className="mb-5">
+          <p className="mb-2 text-sm font-medium text-ink-100">Enrolled faces</p>
+          <EnrolledFaces personId={p.id} templates={p.templates} />
+        </div>
         <PersonForm
           variant={tenant ? 'tenant' : 'person'}
           initial={{ personName: p.personName, referenceId: p.referenceId, department: p.department ?? '', status: p.status }}

@@ -12,6 +12,7 @@ import { api, ApiError } from '@/lib/api';
 import { fmtPercent } from '@/lib/format';
 import { QUALITY_REASON_TEXT } from '@/lib/imageQuality';
 import type { EnrollImageResult, PersonDetail } from '@/lib/types';
+import { EnrolledFaces } from './EnrolledFaces';
 import { FaceCapture, type CapturedImage } from './FaceCapture';
 
 const schema = z.object({
@@ -30,19 +31,29 @@ const LEGAL_BASIS: Array<[FormValues['legalBasis'], string]> = [
   ['OTHER', 'Other (documented in the reference)'],
 ];
 
+type MatchedFace = { id: string; hasPhoto?: boolean; qualityScore?: number | null; createdAt?: string };
+
 type DuplicateHit = {
   matchedPersonId?: string;
+  matchedPersonName?: string;
   referenceId?: string;
+  matchedTemplateId?: string;
+  matchedImageIndex?: number;
   similarity?: number;
+  matchedFaces?: MatchedFace[];
 };
 
 function parseDuplicate(err: ApiError): DuplicateHit {
-  const d = err.details as { matchedPersonId?: string; similarity?: number } | undefined;
+  const d = err.details as DuplicateHit | undefined;
   const fromMessage = err.message.match(/\(([^)]+)\)/)?.[1]?.trim();
   return {
     matchedPersonId: d?.matchedPersonId,
-    referenceId: fromMessage && fromMessage !== 'unknown reference' ? fromMessage : undefined,
+    matchedPersonName: d?.matchedPersonName,
+    referenceId: d?.referenceId ?? (fromMessage && fromMessage !== 'unknown reference' ? fromMessage : undefined),
+    matchedTemplateId: d?.matchedTemplateId,
+    matchedImageIndex: d?.matchedImageIndex,
     similarity: d?.similarity,
+    matchedFaces: d?.matchedFaces,
   };
 }
 
@@ -100,7 +111,7 @@ export function EnrollmentPanel({ person, onEnrolled }: { person: PersonDetail; 
         if (d?.results) setResults(d.results);
         if (err.code === 'DUPLICATE_IDENTITY') {
           setDuplicate(parseDuplicate(err));
-          setServerError('This face already belongs to another registration. The same face cannot be stored under two identities.');
+          setServerError(err.message);
         } else if (err.code === 'INCONSISTENT_IDENTITY') {
           setServerError(`${err.message} (similarity ${d?.similarity ?? '—'}). Remove photos of other people and try again.`);
         } else if (err.code === 'AI_SERVICE_UNAVAILABLE') {
@@ -209,8 +220,20 @@ export function EnrollmentPanel({ person, onEnrolled }: { person: PersonDetail; 
                   <ExternalLink className="h-3.5 w-3.5" />
                 </Link>
               )}
+              {duplicate.matchedPersonId && duplicate.matchedFaces?.length ? (
+                <div className="pt-1">
+                  <p className="mb-2 text-xs text-ink-300">
+                    Matching registration{duplicate.matchedPersonName ? `: ${duplicate.matchedPersonName}` : ''}
+                    {duplicate.referenceId ? ` (${duplicate.referenceId})` : ''}
+                  </p>
+                  <EnrolledFaces personId={duplicate.matchedPersonId} templates={duplicate.matchedFaces.map((face) => ({ ...face, modelName: '', modelVersion: '', qualityScore: face.qualityScore ?? null, createdAt: face.createdAt ?? '' }))} highlightId={duplicate.matchedTemplateId} />
+                </div>
+              ) : null}
               {typeof duplicate.similarity === 'number' && (
-                <p className="text-[11px] text-ink-400">Match score {duplicate.similarity.toFixed(2)} (at or above the known-person threshold).</p>
+                <p className="text-[11px] text-ink-400">
+                  Match {Math.round(duplicate.similarity * 100)}%. A second registration is blocked only when the match is 50% or higher.
+                  {typeof duplicate.matchedImageIndex === 'number' ? ` Closest photo: image ${duplicate.matchedImageIndex + 1}.` : ''}
+                </p>
               )}
             </div>
           )}

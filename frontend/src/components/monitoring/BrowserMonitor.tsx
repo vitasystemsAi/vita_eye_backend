@@ -456,7 +456,13 @@ export function BrowserMonitor({
 
   const pill = PILL[status];
   const problem = active ? monitor.error : (startError ?? monitor.notice);
-  const waitingText = status === 'other-tab' ? 'Monitoring is running in another tab on this device' : active ? 'Waiting for the camera…' : 'Camera preview appears here';
+  const waitingText = status === 'lending'
+    ? 'Camera paused while a face is being added on this device'
+    : status === 'other-tab'
+      ? 'Monitoring is running in another tab on this device'
+      : active
+        ? 'Waiting for the camera…'
+        : 'Camera preview appears here';
   const mirrorPreview = camera?.cameraType !== 'USB';
 
   return (

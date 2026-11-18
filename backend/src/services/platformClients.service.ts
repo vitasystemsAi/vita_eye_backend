@@ -554,7 +554,7 @@ export async function getClient(id: string) {
     const activity = await AuditLog.findAll({ where: { organizationId: id }, order: [['createdAt', 'DESC']], limit: 25 });
     const detections = await DetectionEvent.findAll({
       where: { organizationId: id },
-      include: [{ model: Camera, as: 'camera', attributes: ['id', 'cameraName', 'location'] }],
+      include: [{ model: Camera, as: 'camera', attributes: ['id', 'cameraName', 'location'], paranoid: false }],
       order: [['eventTimestamp', 'DESC']],
       limit: 8,
     });
@@ -622,7 +622,7 @@ export async function listClientDetections(
     const total = await DetectionEvent.count({ where });
     const rows = await DetectionEvent.findAll({
       where,
-      include: [{ model: Camera, as: 'camera', attributes: ['id', 'cameraName', 'location'] }],
+      include: [{ model: Camera, as: 'camera', attributes: ['id', 'cameraName', 'location'], paranoid: false }],
       order: [['eventTimestamp', 'DESC']],
       limit: query.pageSize,
       offset: (query.page - 1) * query.pageSize,

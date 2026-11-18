@@ -161,7 +161,7 @@ export interface Person {
 }
 
 export interface PersonDetail extends Person {
-  templates: Array<{ id: string; modelName: string; modelVersion: string; qualityScore: number | null; createdAt: string }>;
+  templates: Array<{ id: string; modelName: string; modelVersion: string; qualityScore: number | null; createdAt: string; hasPhoto?: boolean }>;
   history: Array<{ id: string; action: string; metadata: Record<string, unknown> | null; createdAt: string; user: { id: string; name: string } | null }>;
 }
 
@@ -184,7 +184,7 @@ export interface EnrollImageResult {
   message?: string;
 }
 
-export type CameraType = 'BROWSER' | 'RTSP' | 'ONVIF' | 'HTTP_MJPEG' | 'USB' | 'LAN';
+export type CameraType = 'BROWSER' | 'RTSP' | 'ONVIF' | 'HTTP_MJPEG' | 'USB' | 'LAN' | 'LAN_PORT';
 
 /** Picture is captured on this computer: the built-in webcam, or a camera on a USB / USB-C cable. */
 export function isLocalCamera(type: CameraType): boolean {

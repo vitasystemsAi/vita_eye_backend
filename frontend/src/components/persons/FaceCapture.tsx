@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Badge, Button, Tabs } from '@/components/ui/primitives';
 import { api } from '@/lib/api';
+import { useMonitor } from '@/lib/monitor';
 import { assessCanvasGuide, assessImage, estimateGuideYaw, guideCrop, guideSignature, signatureMotion, type LocalQuality } from '@/lib/imageQuality';
 
 export interface CapturedImage {
@@ -102,7 +103,7 @@ function cameraErrorMessage(err: unknown, switching = false): string {
   if (name === 'NotReadableError') {
     return switching
       ? 'Could not switch camera — another app may still be using it. Close WhatsApp/Instagram/video calls and other browser tabs, wait a moment, then try again.'
-      : 'The camera is in use by another app or browser tab. Close camera apps and other tabs using the camera, wait a second, then tap Start camera again — or upload photos instead.';
+      : 'This phone’s camera is still held by another app or browser tab. Close that, wait a second, then tap Start camera again — or upload photos instead.';
   }
   return switching ? `Could not switch camera: ${(err as Error).message}` : `Camera unavailable: ${(err as Error).message}`;
 }
@@ -219,6 +220,8 @@ function guideJpeg(canvas: HTMLCanvasElement): Promise<Blob | null> {
 }
 
 export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onChange: (imgs: CapturedImage[]) => void }) {
+  const { releaseDeviceCamera, restoreDeviceCamera } = useMonitor();
+  const cameraHeld = useRef(false);
   const [mode, setMode] = useState<'camera' | 'upload'>('camera');
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [facing, setFacing] = useState<Facing>('user');
@@ -256,7 +259,11 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
       s?.getTracks().forEach((t) => t.stop());
       return null;
     });
-  }, []);
+    if (cameraHeld.current) {
+      cameraHeld.current = false;
+      restoreDeviceCamera();
+    }
+  }, [restoreDeviceCamera]);
 
   useEffect(() => () => stopCamera(), [stopCamera]);
   useEffect(() => () => imagesRef.current.forEach((i) => URL.revokeObjectURL(i.url)), []);
@@ -515,12 +522,24 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
       setStarting(false);
       return;
     }
-    // Release any prior track so Android can hand the camera back after WhatsApp/other apps.
-    stopCamera();
-    await sleep(350);
+    // Let go of this phone's live-monitoring camera first. Face enrollment uses its own capture.
+    setLive(null);
+    setStream((current) => {
+      current?.getTracks().forEach((track) => track.stop());
+      return null;
+    });
+    if (!cameraHeld.current) {
+      await releaseDeviceCamera();
+      cameraHeld.current = true;
+    }
+    await sleep(200);
     try {
       applyStream(await acquireCamera(facingRef.current), facingRef.current);
     } catch (err) {
+      if (cameraHeld.current) {
+        cameraHeld.current = false;
+        restoreDeviceCamera();
+      }
       setCamError(cameraErrorMessage(err));
     } finally {
       setStarting(false);

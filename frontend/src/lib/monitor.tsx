@@ -11,6 +11,7 @@ import { resolveUsbDeviceId } from './usbCameras';
 
 const SESSION_KEY = 'vita.monitor.session';
 const PENDING_STOP_KEY = 'vita.monitor.pendingStop';
+const YIELD_KEY = 'vita.monitor.yield';
 const LOCK_NAME = 'vita-eye-monitor';
 // 1280 matches the detector's working size. A 960-wide grab made distant faces too small on every browser camera.
 const MAX_WIDTH = 1280;
@@ -56,8 +57,9 @@ export interface MonitorStats {
  * idle: nothing running · running: frames are being analysed · connecting: server unreachable, frames
  * resume automatically · paused: outside the camera schedule · camera-unavailable: webcam not delivering
  * video · other-tab: another tab on this device is doing the streaming.
+ * lending: this device's camera was released so a face can be enrolled. The monitoring session stays up.
  */
-export type MonitorStatus = 'idle' | 'starting' | 'running' | 'connecting' | 'paused' | 'camera-unavailable' | 'other-tab';
+export type MonitorStatus = 'idle' | 'starting' | 'running' | 'connecting' | 'paused' | 'camera-unavailable' | 'other-tab' | 'lending';
 
 interface MonitorState {
   session: MonitorSession | null;
@@ -74,6 +76,10 @@ interface MonitorState {
   start: (camera: Camera, deviceId: string) => Promise<Camera>;
   stop: () => Promise<void>;
   resume: () => void;
+  /** Stop this device's monitoring camera so face enrollment can open it. The monitoring session is kept. */
+  releaseDeviceCamera: () => Promise<void>;
+  /** Give the camera back to live monitoring after face enrollment. */
+  restoreDeviceCamera: () => void;
 }
 
 const EMPTY_STATS: MonitorStats = { sent: 0, processed: 0, dropped: 0, failed: 0, latencyMs: 0, fps: 0 };
@@ -209,6 +215,9 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
   const [frameError, setFrameError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [resumeNonce, setResumeNonce] = useState(0);
+  const [lending, setLending] = useState(false);
+  const yieldCount = useRef(0);
+  const remoteYield = useRef(false);
 
   const sessionRef = useRef<MonitorSession | null>(null);
   const ownerRef = useRef(false);
@@ -364,17 +373,18 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
         if (cancelled || streamRef.current !== s) return;
         streamRef.current = null;
         setStream(null);
+        if (yieldCount.current > 0 || remoteYield.current) return;
         setCameraError('Camera disconnected — retrying.');
         timer = setTimeout(acquire, CAMERA_RETRY_MS);
       });
     };
     async function acquire() {
-      if (cancelled) return;
+      if (cancelled || yieldCount.current > 0 || remoteYield.current) return;
       if (streamRef.current?.active) return attach(streamRef.current);
       try {
         const resolved = usb ? await resolveUsbDeviceId(deviceId) : deviceId;
         const s = await openCamera(resolved, !usb);
-        if (cancelled) return s.getTracks().forEach((t) => t.stop());
+        if (cancelled || yieldCount.current > 0 || remoteYield.current) return s.getTracks().forEach((t) => t.stop());
         attach(s);
       } catch (err) {
         if (cancelled) return;
@@ -534,6 +544,9 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
       let s: MediaStream | null = null;
       try {
         const usbCamera = camera.cameraType === 'USB';
+        if (yieldCount.current > 0 || remoteYield.current) {
+          throw new Error('This device camera is adding a face. Stop that capture before starting live monitoring.');
+        }
         const resolved = usbCamera ? await resolveUsbDeviceId(devId) : devId;
         try {
           s = await openCamera(resolved, !usbCamera);
@@ -591,7 +604,58 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
     }
   }, [notify, resetRuntime]);
 
+  // Another tab (another signed-in account on this phone) can ask this tab to let go of the camera.
+  useEffect(() => {
+    const apply = (raw: string | null) => {
+      const wanted = Number(raw || 0) > 0;
+      if (wanted === remoteYield.current) return;
+      remoteYield.current = wanted;
+      if (wanted) {
+        const current = streamRef.current;
+        streamRef.current = null;
+        setStream(null);
+        current?.getTracks().forEach((track) => track.stop());
+        setLending(true);
+        return;
+      }
+      if (yieldCount.current === 0) {
+        setLending(false);
+        setCameraError(null);
+        setResumeNonce((n) => n + 1);
+      }
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === YIELD_KEY) apply(e.newValue);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   const resume = useCallback(() => {
+    if (yieldCount.current > 0) return;
+    setCameraError(null);
+    setResumeNonce((n) => n + 1);
+  }, []);
+
+  const releaseDeviceCamera = useCallback(async () => {
+    yieldCount.current += 1;
+    setLending(true);
+    localStorage.setItem(YIELD_KEY, String(yieldCount.current));
+    const current = streamRef.current;
+    streamRef.current = null;
+    setStream(null);
+    current?.getTracks().forEach((track) => track.stop());
+    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+  }, []);
+
+  const restoreDeviceCamera = useCallback(() => {
+    yieldCount.current = Math.max(0, yieldCount.current - 1);
+    if (yieldCount.current > 0) {
+      localStorage.setItem(YIELD_KEY, String(yieldCount.current));
+      return;
+    }
+    localStorage.removeItem(YIELD_KEY);
+    setLending(false);
     setCameraError(null);
     setResumeNonce((n) => n + 1);
   }, []);
@@ -600,21 +664,29 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
     ? starting
       ? 'starting'
       : 'idle'
-    : !owner
-      ? 'other-tab'
-      : !stream
-        ? 'camera-unavailable'
-        : !connected
-          ? 'connecting'
-          : paused
-            ? 'paused'
-            : 'running';
+    : lending
+      ? 'lending'
+      : !owner
+        ? 'other-tab'
+        : !stream
+          ? 'camera-unavailable'
+          : !connected
+            ? 'connecting'
+            : paused
+              ? 'paused'
+              : 'running';
 
-  const error = status === 'camera-unavailable' ? (cameraError ?? 'Starting camera…') : status === 'connecting' ? 'Server unreachable — the camera stays on and analysis resumes automatically.' : frameError;
+  const error = status === 'lending'
+    ? 'This phone camera is adding a face. Live monitoring uses it again when that capture stops.'
+    : status === 'camera-unavailable'
+      ? (cameraError ?? 'Starting camera…')
+      : status === 'connecting'
+        ? 'Server unreachable — the camera stays on and analysis resumes automatically.'
+        : frameError;
 
   const value = useMemo<MonitorState>(
-    () => ({ session, status, stream, faces, frameSize, stats, error, notice, stopping, start, stop, resume }),
-    [session, status, stream, faces, frameSize, stats, error, notice, stopping, start, stop, resume],
+    () => ({ session, status, stream, faces, frameSize, stats, error, notice, stopping, start, stop, resume, releaseDeviceCamera, restoreDeviceCamera }),
+    [session, status, stream, faces, frameSize, stats, error, notice, stopping, start, stop, resume, releaseDeviceCamera, restoreDeviceCamera],
   );
 
   return (

@@ -59,7 +59,7 @@ export async function createEvidenceRow(
 
 async function loadAuthorized(ctx: AuthContext, evidenceId: string) {
   const ev = await EventEvidence.scope('withStorage').findByPk(evidenceId, {
-    include: [{ model: DetectionEvent, as: 'event', include: [{ model: Camera, as: 'camera' }] }],
+    include: [{ model: DetectionEvent, as: 'event', include: [{ model: Camera, as: 'camera', paranoid: false }] }],
   });
   const event = (ev as unknown as { event?: DetectionEvent })?.event;
   if (!ev || !event || event.organizationId !== ctx.organizationId || event.eventType === 'KNOWN') throw AppError.notFound('Evidence');
@@ -92,7 +92,7 @@ export async function issueEvidenceUrls(ctx: AuthContext, evidenceIds: string[],
   const rows = await EventEvidence.findAll({
     where: { id: { [Op.in]: evidenceIds } },
     attributes: ['id', 'expiresAt'],
-    include: [{ model: DetectionEvent, as: 'event', attributes: ['id', 'organizationId', 'eventType'], include: [{ model: Camera, as: 'camera' }] }],
+    include: [{ model: DetectionEvent, as: 'event', attributes: ['id', 'organizationId', 'eventType'], include: [{ model: Camera, as: 'camera', paranoid: false }] }],
   });
   const now = new Date();
   const exp = Math.floor(Date.now() / 1000) + env.EVIDENCE_URL_TTL_SECONDS;
@@ -152,7 +152,7 @@ export async function readEvidenceBatch(ctx: AuthContext, evidenceIds: string[],
   if (!evidenceIds.length) return out;
   const rows = await EventEvidence.scope('withStorage').findAll({
     where: { id: { [Op.in]: evidenceIds } },
-    include: [{ model: DetectionEvent, as: 'event', attributes: ['id', 'organizationId', 'cameraId', 'eventType'], include: [{ model: Camera, as: 'camera' }] }],
+    include: [{ model: DetectionEvent, as: 'event', attributes: ['id', 'organizationId', 'cameraId', 'eventType'], include: [{ model: Camera, as: 'camera', paranoid: false }] }],
   });
   const now = new Date();
   const allowed = rows.filter((ev) => {

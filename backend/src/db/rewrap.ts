@@ -11,7 +11,7 @@ import { Op } from 'sequelize';
 import { Camera, EventEvidence, FaceTemplate, sequelize } from '../models';
 import { resolveStorage } from '../services/evidence.service';
 import { forEachTenant } from '../services/tenancy.service';
-import { cipher, credentialsAad, evidenceAad, templateAad } from '../utils/cipher';
+import { cipher, credentialsAad, evidenceAad, portraitAad, templateAad } from '../utils/cipher';
 
 const BATCH = 500;
 const dryRun = process.argv.includes('--dry-run');
@@ -36,6 +36,23 @@ async function rewrapTemplates() {
       } catch (err) {
         t.failed++;
         console.error(`  template ${row.id}: ${(err as Error).message}`);
+      }
+      if (!row.previewReference) continue;
+      try {
+        const file = resolveStorage(row.previewReference);
+        const blob = await fs.readFile(file);
+        if (cipher.keyIdOf(blob) === active) continue;
+        const aad = portraitAad(row.id, row.registeredPersonId);
+        const next = cipher.encryptBuffer(cipher.decryptBuffer(blob, aad), aad);
+        if (!dryRun) {
+          const tmp = `${file}.rewrap`;
+          await fs.writeFile(tmp, next, { mode: 0o600 });
+          await fs.rename(tmp, file);
+        }
+        t.rewrapped++;
+      } catch (err) {
+        t.failed++;
+        console.error(`  portrait ${row.id}: ${(err as Error).message}`);
       }
     }
   }

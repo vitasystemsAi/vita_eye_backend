@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
-import { Button, Field, Input } from '@/components/ui/primitives';
+import { Button, Field, Input, PasswordInput } from '@/components/ui/primitives';
 import { api, ApiError } from '@/lib/api';
 
 const schema = z.object({
@@ -72,7 +72,7 @@ function LoginForm() {
         <Field label="Password" error={errors.password?.message} htmlFor="password">
           <div className="relative">
             <Lock className="pointer-events-none absolute top-2.5 left-3 h-4 w-4 text-ink-400" />
-            <Input id="password" type="password" autoComplete="current-password" className="pl-9" {...register('password')} />
+            <PasswordInput id="password" autoComplete="current-password" className="pl-9" {...register('password')} />
           </div>
         </Field>
         {error && <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200" role="alert">{error}</p>}

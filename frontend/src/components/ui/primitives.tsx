@@ -1,12 +1,13 @@
 'use client';
 
-import { ChevronLeft, ChevronRight, Loader2, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, EyeOff, Loader2, X } from 'lucide-react';
 import {
   cloneElement,
   forwardRef,
   isValidElement,
   useEffect,
   useId,
+  useState,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
@@ -139,6 +140,26 @@ export function Field({ label, error, hint, children, htmlFor }: { label: string
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input({ className, ...rest }, ref) {
   return <input ref={ref} className={cn('input', className)} {...rest} />;
+});
+
+export const PasswordInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes<HTMLInputElement>, 'type'>>(function PasswordInput({ className, disabled, ...rest }, ref) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="relative">
+      <Input ref={ref} type={visible ? 'text' : 'password'} disabled={disabled} className={cn('pr-10', className)} {...rest} />
+      <button
+        type="button"
+        disabled={disabled}
+        aria-label={visible ? 'Hide password' : 'Show password'}
+        aria-pressed={visible}
+        title={visible ? 'Hide password' : 'Show password'}
+        onClick={() => setVisible((current) => !current)}
+        className="absolute top-1/2 right-2 -translate-y-1/2 rounded p-1 text-ink-400 hover:text-ink-100 disabled:opacity-40"
+      >
+        {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+      </button>
+    </div>
+  );
 });
 
 export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function Select({ className, children, ...rest }, ref) {

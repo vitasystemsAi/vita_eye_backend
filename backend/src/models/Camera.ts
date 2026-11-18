@@ -1,7 +1,7 @@
 import { CreationOptional, DataTypes, InferAttributes, InferCreationAttributes, Model } from 'sequelize';
 import { sequelize } from '../config/database';
 
-export type CameraType = 'BROWSER' | 'RTSP' | 'ONVIF' | 'HTTP_MJPEG' | 'USB' | 'LAN';
+export type CameraType = 'BROWSER' | 'RTSP' | 'ONVIF' | 'HTTP_MJPEG' | 'USB' | 'LAN' | 'LAN_PORT';
 export type CameraStatus = 'ONLINE' | 'OFFLINE' | 'ERROR' | 'DISABLED';
 
 export interface CameraSchedule {
@@ -32,6 +32,7 @@ export class Camera extends Model<InferAttributes<Camera>, InferCreationAttribut
   declare lastConnectedAt: CreationOptional<Date | null>;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
+  declare deletedAt: CreationOptional<Date | null>;
 }
 
 Camera.init(
@@ -39,7 +40,7 @@ Camera.init(
     id: { type: DataTypes.UUID, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
     organizationId: { type: DataTypes.UUID, allowNull: false },
     cameraName: { type: DataTypes.STRING(120), allowNull: false },
-    cameraType: { type: DataTypes.ENUM('BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG', 'USB', 'LAN'), allowNull: false },
+    cameraType: { type: DataTypes.ENUM('BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG', 'USB', 'LAN', 'LAN_PORT'), allowNull: false },
     location: { type: DataTypes.STRING(160), allowNull: false },
     site: { type: DataTypes.STRING(120), allowNull: true },
     streamReference: { type: DataTypes.STRING(512), allowNull: true },
@@ -62,10 +63,12 @@ Camera.init(
     lastConnectedAt: { type: DataTypes.DATE(3), allowNull: true },
     createdAt: DataTypes.DATE(3),
     updatedAt: DataTypes.DATE(3),
+    deletedAt: DataTypes.DATE(3),
   },
   {
     sequelize,
     tableName: 'cameras',
+    paranoid: true,
     defaultScope: { attributes: { exclude: ['encryptedCredentials'] } },
     scopes: { withCredentials: { attributes: { include: ['encryptedCredentials'] } } },
   },

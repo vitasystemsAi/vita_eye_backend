@@ -10,6 +10,7 @@ import { embedFace, policyFrom, type EmbedResult } from './ai.client';
 import { audit } from './audit.service';
 import { bumpGalleryVersion, loadGallery, templateAad } from './gallery.service';
 import { dot, identityScore } from './identityMatch';
+import { readPortrait, removePortraitFiles, writePortrait } from './portrait';
 import { getSettings } from './settings.service';
 import { syncPolicyToStreams } from './ingestion.service';
 import type { AuthContext } from '../types/auth';
@@ -17,6 +18,8 @@ import { canDiscardRegistration, deletionHold, statusAuditAction, type PersonSta
 
 const MAX_TEMPLATES_PER_PERSON = 10;
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
+/** Enrollment blocks a second identity only when cosine similarity reaches 50%. */
+const ENROLL_DUPLICATE_THRESHOLD = 0.5;
 
 function present(p: RegisteredPerson, templateCount?: number) {
   return {
@@ -116,6 +119,7 @@ export async function getPerson(ctx: AuthContext, id: string) {
       modelVersion: t.modelVersion,
       qualityScore: t.qualityScore,
       createdAt: t.createdAt,
+      hasPhoto: Boolean(t.previewReference),
     })),
     history: history.map((h) => ({ id: String(h.id), action: h.action, metadata: h.metadata, createdAt: h.createdAt, user: h.user ? { id: h.user.id, name: h.user.name } : null })),
   };
@@ -249,7 +253,7 @@ export async function enroll(
   const settings = await getSettings(ctx.organizationId);
   const policy = policyFrom(settings);
   const results: Array<{ index: number; fileName: string; accepted: boolean; quality?: unknown; reasons?: string[]; message?: string }> = [];
-  const accepted: EmbedResult[] = [];
+  const accepted: Array<{ result: EmbedResult; file: EnrollFile; index: number }> = [];
 
   for (const [index, f] of files.entries()) {
     if (!ALLOWED_MIME.has(f.mimetype)) {
@@ -258,7 +262,7 @@ export async function enroll(
     }
     try {
       const r = await embedFace(f.buffer, f.mimetype, policy);
-      accepted.push(r);
+      accepted.push({ result: r, file: f, index });
       results.push({ index, fileName: f.originalname, accepted: true, quality: r.quality });
     } catch (err) {
       if (err instanceof AppError && err.code === 'FACE_QUALITY_REJECTED') {
@@ -280,18 +284,18 @@ export async function enroll(
 
   // Every photo must be the same person. Compare against the clearest image, and every pair,
   // so a different face cannot hide behind one photo that happens to match the first.
-  const anchor = accepted.reduce((best, item) => (item.quality.score > best.quality.score ? item : best));
+  const anchor = accepted.reduce((best, item) => (item.result.quality.score > best.result.quality.score ? item : best));
   const pairFloor = Math.max(0.4, settings.recognition.knownThreshold - 0.04);
   for (const item of accepted) {
     if (item === anchor) continue;
-    const sim = dot(anchor.embedding, item.embedding);
+    const sim = dot(anchor.result.embedding, item.result.embedding);
     if (sim < settings.recognition.knownThreshold) {
       throw new AppError(400, 'INCONSISTENT_IDENTITY', 'The supplied images do not appear to show the same person', { results, similarity: round(sim) });
     }
   }
   for (let i = 0; i < accepted.length; i++) {
     for (let j = i + 1; j < accepted.length; j++) {
-      const sim = dot(accepted[i].embedding, accepted[j].embedding);
+      const sim = dot(accepted[i].result.embedding, accepted[j].result.embedding);
       if (sim < pairFloor) {
         throw new AppError(400, 'INCONSISTENT_IDENTITY', 'The supplied images do not appear to show the same person', { results, similarity: round(sim) });
       }
@@ -301,38 +305,63 @@ export async function enroll(
   // Same identity score the live gallery uses, so a face that would be confused in monitoring
   // is refused here instead of being stored under a second name.
   const gallery = await loadGallery(ctx.organizationId);
-  const byPerson = new Map<string, Array<{ embedding: number[]; quality: number }>>();
+  const byPerson = new Map<string, Array<{ templateId: string; embedding: number[]; quality: number }>>();
   for (const t of gallery.templates) {
     if (t.personId === id) continue;
     const list = byPerson.get(t.personId) ?? [];
-    list.push({ embedding: t.embedding, quality: typeof t.qualityScore === 'number' && t.qualityScore > 0 ? t.qualityScore : 0.75 });
+    list.push({ templateId: t.templateId, embedding: t.embedding, quality: typeof t.qualityScore === 'number' && t.qualityScore > 0 ? t.qualityScore : 0.75 });
     byPerson.set(t.personId, list);
   }
-  const probes = accepted.map((a) => ({ embedding: a.embedding, quality: a.quality.score }));
+  const probes = accepted.map((a) => ({ index: a.index, embedding: a.result.embedding, quality: a.result.quality.score }));
   for (const [personId, templates] of byPerson) {
     const sim = Math.max(...probes.map((probe) => identityScore(probe.embedding, templates)));
-    if (sim >= settings.recognition.knownThreshold) {
-      const other = await RegisteredPerson.findByPk(personId);
-      throw new AppError(409, 'DUPLICATE_IDENTITY', `This face matches an existing registration (${other?.referenceId ?? 'unknown reference'})`, {
-        results,
-        matchedPersonId: personId,
-        similarity: round(sim),
-      });
+    if (sim < ENROLL_DUPLICATE_THRESHOLD) continue;
+    let closest = -1;
+    let closestTemplateId: string | null = null;
+    let matchedImageIndex = probes[0]?.index ?? 0;
+    for (const probe of probes) {
+      for (const template of templates) {
+        const score = dot(probe.embedding, template.embedding);
+        if (score > closest) {
+          closest = score;
+          closestTemplateId = template.templateId;
+          matchedImageIndex = probe.index;
+        }
+      }
     }
+    const other = await RegisteredPerson.findByPk(personId, { include: [{ model: FaceTemplate, as: 'templates' }] });
+    const pct = Math.round(sim * 100);
+    throw new AppError(409, 'DUPLICATE_IDENTITY', `Image ${matchedImageIndex + 1} matches ${other?.personName ?? 'another registration'} (${other?.referenceId ?? 'unknown reference'}) at ${pct}%.`, {
+      results,
+      matchedPersonId: personId,
+      matchedPersonName: other?.personName ?? null,
+      referenceId: other?.referenceId ?? null,
+      matchedTemplateId: closestTemplateId,
+      matchedImageIndex,
+      similarity: round(sim),
+      matchedFaces: (other?.templates ?? []).map((t) => ({ id: t.id, hasPhoto: Boolean(t.previewReference), qualityScore: t.qualityScore })),
+    });
   }
 
+  const written: string[] = [];
+  const retired = consent.replaceExisting ? (p.templates ?? []).map((t) => t.previewReference) : [];
+  try {
   await sequelize.transaction(async (transaction) => {
     if (consent.replaceExisting) await FaceTemplate.destroy({ where: { registeredPersonId: id }, transaction });
-    for (const r of accepted) {
+    for (const item of accepted) {
       const templateId = crypto.randomUUID();
+      const previewReference = await writePortrait(ctx.organizationId, templateId, id, item.file.buffer);
+      written.push(previewReference);
       await FaceTemplate.create(
         {
           id: templateId,
           registeredPersonId: id,
-          encryptedEmbedding: cipher.encryptEmbedding(r.embedding, templateAad(templateId, id)),
-          modelName: r.modelName,
-          modelVersion: r.modelVersion,
-          qualityScore: r.quality.score,
+          encryptedEmbedding: cipher.encryptEmbedding(item.result.embedding, templateAad(templateId, id)),
+          modelName: item.result.modelName,
+          modelVersion: item.result.modelVersion,
+          qualityScore: item.result.quality.score,
+          previewReference,
+          previewMime: item.file.mimetype,
         },
         { transaction },
       );
@@ -355,13 +384,26 @@ export async function enroll(
         entityType: 'registered_person',
         entityId: id,
         ipAddress: ip,
-        metadata: { templatesAdded: accepted.length, replaced: consent.replaceExisting, rejected: results.filter((r) => !r.accepted).length, legalBasis: consent.legalBasis, modelVersion: accepted[0].modelVersion },
+        metadata: { templatesAdded: accepted.length, replaced: consent.replaceExisting, rejected: results.filter((r) => !r.accepted).length, legalBasis: consent.legalBasis, modelVersion: accepted[0].result.modelVersion },
       },
       transaction,
     );
   });
+  } catch (err) {
+    await removePortraitFiles(written);
+    throw err;
+  }
+  await removePortraitFiles(retired);
   await galleryChanged(ctx.organizationId);
   return { person: await getPerson(ctx, id), results };
+}
+
+export async function readFacePhoto(ctx: AuthContext, personId: string, templateId: string) {
+  const p = await findPerson(ctx, personId);
+  const template = (p.templates ?? []).find((t) => t.id === templateId);
+  if (!template?.previewReference) throw AppError.notFound('Face photo');
+  const data = await readPortrait(template.previewReference, template.id, p.id);
+  return { data, mimeType: template.previewMime || 'image/jpeg' };
 }
 
 /**
@@ -408,6 +450,7 @@ export async function deletePerson(ctx: AuthContext, id: string, ip: string | nu
         : `Deletion is available on ${when}, 7 days after this person was ${p.status === 'SUSPENDED' ? 'suspended' : 'marked inactive'}.`,
     );
   }
+  const portraits = (p.templates ?? []).map((t) => t.previewReference);
   await sequelize.transaction(async (transaction) => {
     const removed = await FaceTemplate.destroy({ where: { registeredPersonId: id }, transaction });
     const remaining = await FaceTemplate.count({ where: { registeredPersonId: id }, transaction });
@@ -417,6 +460,7 @@ export async function deletePerson(ctx: AuthContext, id: string, ip: string | nu
     await audit({ organizationId: ctx.organizationId, userId: ctx.userId, action: 'BIOMETRIC_TEMPLATES_DELETED', entityType: 'registered_person', entityId: id, ipAddress: ip, metadata: { templatesDeleted: removed, verifiedRemaining: remaining } }, transaction);
     await audit({ organizationId: ctx.organizationId, userId: ctx.userId, action: 'PERSON_DELETED', entityType: 'registered_person', entityId: id, ipAddress: ip, metadata: { referenceId: p.referenceId } }, transaction);
   });
+  await removePortraitFiles(portraits);
   await galleryChanged(ctx.organizationId);
   return { deleted: true };
 }

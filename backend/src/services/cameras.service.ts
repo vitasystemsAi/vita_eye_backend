@@ -12,14 +12,14 @@ import { audit } from './audit.service';
 import {
   LOCAL_TYPES,
   NETWORK_TYPES,
-  blockedCameraNetworks,
-  cameraNetworks,
   credentialsAad,
   resolveStreamUrl,
   setCameraStatus,
   startNetworkStream,
   stopNetworkStream,
+  urlNetworks,
 } from './ingestion.service';
+import { discoverLanPortCameras } from './lanPortDiscover';
 import { signMonitorTicket } from './monitorTicket.service';
 import { emitToPreview } from '../sockets/emitter';
 import { forgetPreview } from '../sockets/previewCache';
@@ -82,6 +82,10 @@ export async function listCameras(
   return { items: rows.map(presentCamera), meta: pageMeta(q.page, q.pageSize, count), sites };
 }
 
+export async function discoverLanPorts() {
+  return { cameras: await discoverLanPortCameras() };
+}
+
 export async function getCamera(ctx: AuthContext, id: string) {
   return presentCamera(await load(ctx, id));
 }
@@ -114,7 +118,8 @@ export async function createCamera(ctx: AuthContext, input: CameraInput & { came
   assertSiteAllowed(ctx, input.site);
   let streamReference: string | null = null;
   if (NETWORK_TYPES.has(input.cameraType)) {
-    streamReference = (await assertCameraUrlAllowed(input.streamUrl!, input.cameraType, cameraNetworks, blockedCameraNetworks)).toString();
+    const nets = urlNetworks(input.cameraType);
+    streamReference = (await assertCameraUrlAllowed(input.streamUrl!, input.cameraType, nets.allowed, nets.blocked)).toString();
   } else if (input.cameraType === 'USB') {
     streamReference = usbDeviceReference(input.streamUrl);
   }
@@ -166,7 +171,10 @@ export async function updateCamera(ctx: AuthContext, id: string, input: CameraIn
     if (input.streamUrl !== undefined) changes.streamReference = usbDeviceReference(input.streamUrl);
   }
   if (NETWORK_TYPES.has(cam.cameraType)) {
-    if (input.streamUrl) changes.streamReference = (await assertCameraUrlAllowed(input.streamUrl, cam.cameraType, cameraNetworks, blockedCameraNetworks)).toString();
+    if (input.streamUrl) {
+      const nets = urlNetworks(cam.cameraType);
+      changes.streamReference = (await assertCameraUrlAllowed(input.streamUrl, cam.cameraType, nets.allowed, nets.blocked)).toString();
+    }
     if (input.clearCredentials) changes.encryptedCredentials = null;
     else if (input.username) {
       changes.encryptedCredentials = cipher.encryptString(JSON.stringify({ username: input.username, password: input.password ?? '' }), credentialsAad(cam.id));
@@ -199,13 +207,37 @@ export async function updateCamera(ctx: AuthContext, id: string, input: CameraIn
 export async function deleteCamera(ctx: AuthContext, id: string, ip: string | null) {
   const cam = await load(ctx, id);
   const events = await DetectionEvent.count({ where: { cameraId: id } });
-  if (events > 0) throw AppError.conflict('This camera has recorded events and cannot be deleted. Deactivate it instead.');
+  const originalName = cam.cameraName;
   if (NETWORK_TYPES.has(cam.cameraType)) await stopNetworkStream(cam);
+  forgetPreview(cam.id);
+  emitToPreview(cam.id, 'camera:preview:status', { cameraId: cam.id, monitoring: false });
+  // Free the name so the same camera can be added again. Events keep this row and still show the label.
+  const stamp = ` (removed ${id.slice(0, 8)})`;
+  const archivedName = `${originalName.slice(0, 120 - stamp.length)}${stamp}`;
   await sequelize.transaction(async (transaction) => {
+    await cam.update(
+      {
+        cameraName: archivedName,
+        isActive: false,
+        monitoringEnabled: false,
+        monitorTicketId: null,
+        status: 'DISABLED',
+        encryptedCredentials: null,
+      },
+      { transaction },
+    );
     await cam.destroy({ transaction });
-    await audit({ organizationId: ctx.organizationId, userId: ctx.userId, action: 'CAMERA_DELETED', entityType: 'camera', entityId: id, ipAddress: ip, metadata: { name: cam.cameraName } }, transaction);
+    await audit({
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+      action: 'CAMERA_DELETED',
+      entityType: 'camera',
+      entityId: id,
+      ipAddress: ip,
+      metadata: { name: originalName, eventsKept: events },
+    }, transaction);
   });
-  return { deleted: true };
+  return { deleted: true, eventsKept: events };
 }
 
 export async function testConnection(ctx: AuthContext, id: string, ip: string | null) {
@@ -234,7 +266,8 @@ export async function testDraftConnection(
   input: { cameraId?: string; cameraType: CameraType; streamUrl: string; username?: string | null; password?: string | null; clearCredentials?: boolean },
   ip: string | null,
 ) {
-  await assertCameraUrlAllowed(input.streamUrl, input.cameraType, cameraNetworks, blockedCameraNetworks);
+  const nets = urlNetworks(input.cameraType);
+  await assertCameraUrlAllowed(input.streamUrl, input.cameraType, nets.allowed, nets.blocked);
   let creds: { username?: string; password?: string } | null = null;
   if (!input.clearCredentials && input.username) {
     creds = { username: input.username, password: input.password ?? '' };

@@ -25,6 +25,7 @@ const ALLOWED_SCHEMES: Record<string, string[]> = {
   ONVIF: ['rtsp:', 'rtsps:'],
   HTTP_MJPEG: ['http:', 'https:'],
   LAN: ['rtsp:', 'rtsps:', 'http:', 'https:'],
+  LAN_PORT: ['rtsp:', 'rtsps:', 'http:', 'https:'],
 };
 
 /**

@@ -3,7 +3,7 @@
 import { Check, Copy, KeyRound, Pause, Play } from 'lucide-react';
 import { useState } from 'react';
 import { cn } from '@/components/ui/cn';
-import { Badge, Button, Field, Input, Modal, Select, Textarea } from '@/components/ui/primitives';
+import { Badge, Button, Field, Input, Modal, PasswordInput, Select, Textarea } from '@/components/ui/primitives';
 import { useToast } from '@/components/ui/toast';
 import { api, ApiError, errorMessage } from '@/lib/api';
 import { copyText, type FeatureInfo, type PlanInfo, type PlatformOrganization, type SetupLink } from '@/lib/platform';
@@ -118,7 +118,7 @@ export function ResetPasswordDialog({ org, email, open, onClose }: { org: { id: 
             Sends a single-use link to <strong className="text-ink-100">{email ?? 'the primary admin'}</strong>. The current password is not revealed. Existing sessions end when the new password is set.
           </p>
           <Field label="Your platform password" hint="Required to confirm this reset">
-            <Input type="password" autoComplete="current-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+            <PasswordInput autoComplete="current-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
           </Field>
           {error && <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-red-200">{error}</p>}
         </div>

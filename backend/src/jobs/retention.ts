@@ -17,6 +17,7 @@ import {
 } from '../models';
 import { audit } from '../services/audit.service';
 import { deleteEvidenceFile } from '../services/evidence.service';
+import { removePortraitFiles } from '../services/portrait';
 import { getSettings } from '../services/settings.service';
 import { forEachTenant, type TenantInfo } from '../services/tenancy.service';
 import { PROVISIONED_STATUSES } from '../utils/accountPolicy';
@@ -174,6 +175,7 @@ async function applyTenantRetention(org: TenantInfo, legalHold: boolean): Promis
       paranoid: false,
     });
     for (const person of deletedPeople) {
+      const portraits = (await FaceTemplate.findAll({ where: { registeredPersonId: person.id }, attributes: ['previewReference'] })).map((t) => t.previewReference);
       await sequelize.transaction(async (transaction) => {
         await FaceTemplate.destroy({ where: { registeredPersonId: person.id }, transaction });
         const remaining = await FaceTemplate.count({ where: { registeredPersonId: person.id }, transaction });
@@ -190,6 +192,7 @@ async function applyTenantRetention(org: TenantInfo, legalHold: boolean): Promis
           transaction,
         );
       });
+      await removePortraitFiles(portraits);
     }
   } catch (err) {
     counts.failed += 1;

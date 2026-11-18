@@ -60,6 +60,8 @@ export class FaceTemplate extends Model<InferAttributes<FaceTemplate>, InferCrea
   declare modelName: string;
   declare modelVersion: string;
   declare qualityScore: number | null;
+  declare previewReference: CreationOptional<string | null>;
+  declare previewMime: CreationOptional<string | null>;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
 }
@@ -72,6 +74,8 @@ FaceTemplate.init(
     modelName: { type: DataTypes.STRING(64), allowNull: false },
     modelVersion: { type: DataTypes.STRING(64), allowNull: false },
     qualityScore: { type: DataTypes.FLOAT, allowNull: true },
+    previewReference: { type: DataTypes.STRING(512), allowNull: true },
+    previewMime: { type: DataTypes.STRING(32), allowNull: true },
     createdAt: DataTypes.DATE(3),
     updatedAt: DataTypes.DATE(3),
   },

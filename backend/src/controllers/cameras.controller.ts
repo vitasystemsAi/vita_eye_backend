@@ -35,6 +35,10 @@ export async function testDraft(req: Request, res: Response) {
   ok(res, await cameras.testDraftConnection(authOf(req), parse(testDraftSchema, req.body), clientIp(req)));
 }
 
+export async function discover(req: Request, res: Response) {
+  ok(res, await cameras.discoverLanPorts());
+}
+
 export async function start(req: Request, res: Response) {
   ok(res, await cameras.startMonitoring(authOf(req), parse(idParam, req.params).id, clientIp(req)));
 }

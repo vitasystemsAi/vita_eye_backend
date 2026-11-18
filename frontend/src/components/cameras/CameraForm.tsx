@@ -5,7 +5,7 @@ import { PlugZap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
-import { Button, Field, Input, Select } from '@/components/ui/primitives';
+import { Button, Field, Input, PasswordInput, Select } from '@/components/ui/primitives';
 import { ApiError, api, errorMessage } from '@/lib/api';
 import { listVideoInputs, splitVideoInputs } from '@/lib/usbCameras';
 import type { Camera, CameraType } from '@/lib/types';
@@ -83,11 +83,12 @@ function lanStreamUrl(protocol: LanProtocol, host: string, port: string, path: s
 const schema = z
   .object({
     cameraName: z.string().trim().min(2, 'At least 2 characters').max(120),
-    cameraType: z.enum(['BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG', 'USB', 'LAN']),
+    cameraType: z.enum(['BROWSER', 'RTSP', 'ONVIF', 'HTTP_MJPEG', 'USB', 'LAN', 'LAN_PORT']),
     location: z.string().trim().min(2, 'At least 2 characters').max(160),
     site: z.string().trim().max(120),
     streamUrl: z.string().trim().max(512),
     usbDeviceId: z.string().trim().max(512),
+    lanPortUrl: z.string().trim().max(512),
     lanProtocol: z.enum(['rtsp', 'rtsps', 'onvif', 'http']),
     lanHost: z.string().trim().max(253),
     lanPort: z.string().trim().max(5),
@@ -147,6 +148,9 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
   const [usbNotice, setUsbNotice] = useState<string | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [previewId, setPreviewId] = useState('');
+  const [lanCameras, setLanCameras] = useState<Array<{ ip: string; name: string; streamUrl: string; source: 'onvif' | 'rtsp' | 'http' }>>([]);
+  const [lanNotice, setLanNotice] = useState<string | null>(null);
+  const [findingLan, setFindingLan] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const {
@@ -167,6 +171,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
       site: camera?.site ?? '',
       streamUrl: '',
       usbDeviceId: camera?.cameraType === 'USB' ? (camera.streamReference ?? '') : '',
+      lanPortUrl: camera?.cameraType === 'LAN_PORT' ? (camera.streamReference ?? '') : '',
       lanProtocol: lanInitial.lanProtocol,
       lanHost: lanInitial.lanHost,
       lanPort: lanInitial.lanPort,
@@ -187,6 +192,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
   const days = useWatch({ control, name: 'days' });
   const directUrl = type === 'RTSP' || type === 'ONVIF' || type === 'HTTP_MJPEG';
   const usbDeviceId = useWatch({ control, name: 'usbDeviceId' });
+  const lanPortUrl = useWatch({ control, name: 'lanPortUrl' });
   const lanProtocolField = register('lanProtocol');
 
   async function detectUsb() {
@@ -224,9 +230,31 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
     }
   }
 
+  async function detectLanPort() {
+    setLanNotice(null);
+    setFindingLan(true);
+    try {
+      const { data } = await api.post<{ cameras: Array<{ ip: string; name: string; streamUrl: string; source: 'onvif' | 'rtsp' | 'http' }> }>('/cameras/discover-lan-port', {}, { signal: AbortSignal.timeout(45000) });
+      setLanCameras(data.cameras);
+      if (!data.cameras.length) {
+        setLanNotice('No camera answered on this computer’s LAN ports. Plug the camera into the Ethernet port, wait for the link light, then detect again.');
+        return;
+      }
+      const current = getValues('lanPortUrl');
+      const keep = data.cameras.some((item) => item.streamUrl === current) ? current : (data.cameras[0]?.streamUrl ?? '');
+      setValue('lanPortUrl', keep, { shouldValidate: true });
+      setLanNotice(data.cameras.length > 1 ? `${data.cameras.length} cameras found. Select the one plugged into this computer.` : 'Camera found. Select it, then add it.');
+    } catch (err) {
+      const name = (err as Error).name;
+      setLanNotice(name === 'TimeoutError' || name === 'AbortError' ? 'Detection took too long. Check the Ethernet cable and try again.' : errorMessage(err));
+    } finally {
+      setFindingLan(false);
+    }
+  }
+
   async function testConnection() {
     const v = getValues();
-    const network = v.cameraType === 'LAN' || v.cameraType === 'RTSP' || v.cameraType === 'ONVIF' || v.cameraType === 'HTTP_MJPEG';
+    const network = v.cameraType === 'LAN' || v.cameraType === 'LAN_PORT' || v.cameraType === 'RTSP' || v.cameraType === 'ONVIF' || v.cameraType === 'HTTP_MJPEG';
     if (!network) return;
     let streamUrl = '';
     if (v.cameraType === 'LAN') {
@@ -236,6 +264,12 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
       }
       if (!(await trigger(['lanHost', 'lanPort', 'lanPath']))) return;
       streamUrl = lanStreamUrl(v.lanProtocol, v.lanHost, v.lanPort, v.lanPath);
+    } else if (v.cameraType === 'LAN_PORT') {
+      streamUrl = v.lanPortUrl.trim();
+      if (!streamUrl) {
+        setError('lanPortUrl', { message: 'Detect the LAN port cameras and select one' });
+        return;
+      }
     } else {
       streamUrl = v.streamUrl.trim() || camera?.streamReference || '';
       if (!streamUrl) {
@@ -268,6 +302,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
         const fields = err.fieldErrors();
         const message = fields.streamUrl || err.message;
         if (v.cameraType === 'LAN' && fields.streamUrl) setError('lanHost', { message: fields.streamUrl });
+        if (v.cameraType === 'LAN_PORT' && fields.streamUrl) setError('lanPortUrl', { message: fields.streamUrl });
         setTestResult({ ok: false, text: message });
       } else if ((err as Error).name === 'TimeoutError' || (err as Error).name === 'AbortError') {
         setTestResult({ ok: false, text: 'The camera did not answer in time. Check the IP, port, and path.' });
@@ -286,6 +321,10 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
     }
     if (v.cameraType === 'USB' && !v.usbDeviceId) {
       setError('usbDeviceId', { message: 'Detect the USB cameras and select the one shown in the preview' });
+      return;
+    }
+    if (v.cameraType === 'LAN_PORT' && !v.lanPortUrl) {
+      setError('lanPortUrl', { message: 'Detect the LAN port cameras and select one' });
       return;
     }
     if (v.cameraType === 'LAN' && !camera && !v.lanHost) {
@@ -309,6 +348,13 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
         payload.username = v.username;
         payload.password = v.password;
       }
+    } else if (v.cameraType === 'LAN_PORT') {
+      if (v.lanPortUrl) payload.streamUrl = v.lanPortUrl;
+      if (v.clearCredentials) payload.clearCredentials = true;
+      else if (v.username) {
+        payload.username = v.username;
+        payload.password = v.password;
+      }
     } else if (directUrl) {
       if (v.streamUrl) payload.streamUrl = v.streamUrl;
       if (v.clearCredentials) payload.clearCredentials = true;
@@ -323,7 +369,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
       if (err instanceof ApiError) {
         const fields = err.fieldErrors();
         for (const [k, m] of Object.entries(fields)) {
-          const key = v.cameraType === 'LAN' && k === 'streamUrl' ? 'lanHost' : k;
+          const key = v.cameraType === 'LAN' && k === 'streamUrl' ? 'lanHost' : v.cameraType === 'LAN_PORT' && k === 'streamUrl' ? 'lanPortUrl' : k;
           setError(key as keyof FormValues, { message: m });
         }
         if (!Object.keys(fields).length) setError('root', { message: err.message });
@@ -342,6 +388,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
             <option value="BROWSER">Browser / laptop webcam (operator device)</option>
             <option value="USB">USB / USB-C cable camera</option>
             <option value="LAN">LAN port camera (direct IP)</option>
+            <option value="LAN_PORT">LAN port (auto IP)</option>
             <option value="RTSP">IP camera — RTSP</option>
             <option value="ONVIF">ONVIF camera (RTSP profile URL)</option>
             <option value="HTTP_MJPEG">HTTP MJPEG stream</option>
@@ -435,7 +482,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
               <Input {...register('username')} autoComplete="off" />
             </Field>
             <Field label="Password" error={errors.password?.message}>
-              <Input type="password" {...register('password')} autoComplete="new-password" />
+              <PasswordInput {...register('password')} autoComplete="new-password" />
             </Field>
           </div>
           {camera?.hasCredentials && (
@@ -444,6 +491,55 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
             </label>
           )}
           <p className="text-xs text-ink-400">Credentials are never returned to the browser and are only sent to the internal recognition service.</p>
+        </div>
+      )}
+
+      {type === 'LAN_PORT' && (
+        <div className="space-y-4 rounded-xl border border-ink-700 bg-ink-850/60 p-4">
+          <input type="hidden" {...register('lanPortUrl')} />
+          <div className="flex flex-wrap items-center gap-3">
+            <Button variant="secondary" loading={findingLan} onClick={() => void detectLanPort()}>
+              Detect LAN port cameras
+            </Button>
+            {lanNotice && <p className="text-xs text-amber-300">{lanNotice}</p>}
+          </div>
+          <p className="text-xs text-ink-400">
+            Plug the camera into this computer’s Ethernet port. Vita Eye finds its address and opens the stream. You do not type an IP. The direct-IP LAN option is unchanged.
+          </p>
+          {camera?.streamReference && !lanPortUrl && <p className="text-xs text-ink-400">Current stream: {camera.streamReference}</p>}
+          {errors.lanPortUrl && <p className="text-xs text-red-400">{errors.lanPortUrl.message}</p>}
+          {lanCameras.length > 0 && (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {lanCameras.map((item) => {
+                const selected = lanPortUrl === item.streamUrl;
+                return (
+                  <button
+                    key={item.ip}
+                    type="button"
+                    onClick={() => setValue('lanPortUrl', item.streamUrl, { shouldValidate: true })}
+                    className={`rounded-lg px-3 py-2 text-left ring-1 ${selected ? 'bg-brand-600/15 text-brand-100 ring-brand-500/50' : 'text-ink-200 ring-ink-600 hover:bg-ink-800'}`}
+                  >
+                    <span className="block text-sm font-medium">{item.name}</span>
+                    <span className="block truncate font-mono text-xs text-ink-400">{item.ip}</span>
+                    <span className="mt-1 block text-[11px]">{selected ? 'Selected' : item.source === 'onvif' ? 'Found automatically' : 'Port open — select'}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Field label="Username" error={errors.username?.message} hint={camera?.hasCredentials ? 'Stored encrypted — leave blank to keep' : 'Only if the camera asks for a login'}>
+              <Input {...register('username')} autoComplete="off" />
+            </Field>
+            <Field label="Password" error={errors.password?.message}>
+              <PasswordInput {...register('password')} autoComplete="new-password" />
+            </Field>
+          </div>
+          {camera?.hasCredentials && (
+            <label className="flex items-center gap-2 text-sm text-ink-200">
+              <input type="checkbox" className="h-4 w-4 accent-blue-600" {...register('clearCredentials')} /> Remove stored credentials
+            </label>
+          )}
         </div>
       )}
 
@@ -461,7 +557,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
               <Input {...register('username')} autoComplete="off" />
             </Field>
             <Field label="Password" error={errors.password?.message}>
-              <Input type="password" {...register('password')} autoComplete="new-password" />
+              <PasswordInput {...register('password')} autoComplete="new-password" />
             </Field>
           </div>
           {camera?.hasCredentials && (
@@ -524,7 +620,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
         <p className={`rounded-lg px-3 py-2 text-sm ${testResult.ok ? 'bg-emerald-500/10 text-emerald-200' : 'bg-red-500/10 text-red-200'}`}>{testResult.text}</p>
       )}
       <div className="flex items-center justify-end gap-2">
-        {(type === 'LAN' || directUrl) && (
+        {(type === 'LAN' || type === 'LAN_PORT' || directUrl) && (
           <Button variant="secondary" className="mr-auto" icon={<PlugZap className="h-4 w-4" />} loading={testing} onClick={() => void testConnection()}>
             Test connection
           </Button>

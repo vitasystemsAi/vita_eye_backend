@@ -2,7 +2,7 @@
 
 import { ArrowLeftRight, Download, FileArchive, FileSpreadsheet, ScanFace, Upload } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { Badge, Button, Card, Field, Input, PageHeader, Select } from '@/components/ui/primitives';
+import { Badge, Button, Card, Field, Input, PageHeader, PasswordInput, Select } from '@/components/ui/primitives';
 import { useToast } from '@/components/ui/toast';
 import { ApiError, api, downloadBlob, downloadFile, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -264,10 +264,10 @@ function FaceExport() {
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Passphrase" hint="12 to 128 characters. Store it outside this file.">
-            <Input type="password" autoComplete="new-password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} />
+            <PasswordInput autoComplete="new-password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} />
           </Field>
           <Field label="Confirm passphrase" error={mismatch ? 'The passphrases do not match' : undefined}>
-            <Input type="password" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} />
+            <PasswordInput autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} />
           </Field>
         </div>
         <p className="text-xs text-amber-200/90">Treat this file as biometric data. The audit log records that an export happened, not the passphrase and not the faces.</p>
@@ -322,7 +322,7 @@ function FaceImport() {
       <div className="space-y-3 px-5 py-4">
         <FilePick picker={picker} accept=".zip,application/zip" label="Package (.zip)" onChange={resetPlan} />
         <Field label="Passphrase">
-          <Input type="password" autoComplete="current-password" value={passphrase} onChange={(event) => { setPassphrase(event.target.value); resetPlan(); }} />
+          <PasswordInput autoComplete="current-password" value={passphrase} onChange={(event) => { setPassphrase(event.target.value); resetPlan(); }} />
         </Field>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="If the person is not registered">

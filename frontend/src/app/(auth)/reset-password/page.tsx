@@ -7,7 +7,7 @@ import { useSearchParams } from 'next/navigation';
 import { Suspense, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
-import { Button, Field, Input } from '@/components/ui/primitives';
+import { Button, Field, PasswordInput } from '@/components/ui/primitives';
 import { api, errorMessage } from '@/lib/api';
 import { passwordRule } from '@/lib/validation';
 
@@ -58,10 +58,10 @@ function ResetForm() {
       ) : (
         <form onSubmit={handleSubmit(onSubmit)} className="mt-6 space-y-4" noValidate>
           <Field label="New password" error={errors.password?.message} hint="At least 12 characters with upper-case, lower-case and a digit." htmlFor="password">
-            <Input id="password" type="password" autoComplete="new-password" {...register('password')} />
+            <PasswordInput id="password" autoComplete="new-password" {...register('password')} />
           </Field>
           <Field label="Confirm password" error={errors.confirm?.message} htmlFor="confirm">
-            <Input id="confirm" type="password" autoComplete="new-password" {...register('confirm')} />
+            <PasswordInput id="confirm" autoComplete="new-password" {...register('confirm')} />
           </Field>
           {error && <p className="text-sm text-red-300">{error}</p>}
           <Button type="submit" className="w-full" loading={isSubmitting} icon={<KeyRound className="h-4 w-4" />}>

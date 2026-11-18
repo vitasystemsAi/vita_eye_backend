@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { RequirePermission } from '@/components/RequirePermission';
-import { Badge, Button, Card, EmptyState, ErrorBanner, Field, Input, LoadingBlock, Modal, PageHeader, Pagination, Select, Tabs } from '@/components/ui/primitives';
+import { Badge, Button, Card, EmptyState, ErrorBanner, Field, Input, LoadingBlock, Modal, PageHeader, Pagination, PasswordInput, Select, Tabs } from '@/components/ui/primitives';
 import { useToast } from '@/components/ui/toast';
 import { api, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -108,7 +108,7 @@ function UserForm({ user, onDone, onCancel }: { user?: ManagedUser; onDone: () =
           <Input {...register('siteScope')} placeholder="HQ, Warehouse" />
         </Field>
         <Field label={isEdit ? 'Reset password (optional)' : 'Initial password'} error={errors.password?.message} hint="12+ characters with upper-case, lower-case and a digit">
-          <Input type="password" {...register('password')} autoComplete="new-password" />
+          <PasswordInput {...register('password')} autoComplete="new-password" />
         </Field>
       </div>
       {errors.root && <p className="text-sm text-red-300">{errors.root.message}</p>}

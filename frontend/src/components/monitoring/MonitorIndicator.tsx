@@ -11,6 +11,7 @@ const STATUS: Record<Exclude<MonitorStatus, 'idle' | 'starting'>, { label: strin
   connecting: { label: 'Reconnecting', dot: 'bg-amber-400 animate-pulse' },
   paused: { label: 'Paused (schedule)', dot: 'bg-sky-400' },
   'camera-unavailable': { label: 'Camera unavailable', dot: 'bg-amber-400' },
+  lending: { label: 'Paused for face enrollment', dot: 'bg-sky-400' },
   'other-tab': { label: 'Running in another tab', dot: 'bg-red-500' },
 };
 

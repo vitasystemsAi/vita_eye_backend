@@ -4,6 +4,7 @@ import * as persons from '../services/persons.service';
 import { guidePose, type PoseTarget } from '../services/ai.client';
 import { AppError, parse } from '../utils/errors';
 import { clientIp, created, ok } from '../utils/http';
+import { z } from 'zod';
 import { idParam } from '../validators/users.validators';
 import { createPersonSchema, enrollSchema, listPersonsSchema, poseTargetSchema, setStatusSchema, updatePersonSchema } from '../validators/persons.validators';
 
@@ -14,6 +15,16 @@ export async function list(req: Request, res: Response) {
 
 export async function get(req: Request, res: Response) {
   ok(res, await persons.getPerson(authOf(req), parse(idParam, req.params).id));
+}
+
+export async function facePhoto(req: Request, res: Response) {
+  const { id } = parse(idParam, req.params);
+  const { templateId } = parse(z.object({ templateId: z.string().uuid() }), req.params);
+  const photo = await persons.readFacePhoto(authOf(req), id, templateId);
+  res.setHeader('Content-Type', photo.mimeType);
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.send(photo.data);
 }
 
 export async function create(req: Request, res: Response) {

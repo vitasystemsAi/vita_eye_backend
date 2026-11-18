@@ -4,6 +4,7 @@ import { ArrowLeft, UserPlus } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { EnrolledFaces } from '@/components/persons/EnrolledFaces';
 import { EnrollmentPanel } from '@/components/persons/EnrollmentPanel';
 import { PersonForm } from '@/components/persons/PersonForm';
 import { RequirePermission } from '@/components/RequirePermission';
@@ -141,7 +142,10 @@ function NewPersonView() {
         <Card>
           <div className="flex flex-col items-center gap-4 p-10 text-center">
             <p className="text-lg font-semibold text-emerald-300">{person.personName} is enrolled</p>
-            <p className="max-w-lg text-sm text-ink-300">{person.templateCount} encrypted template(s) were added to the recognition gallery. Running cameras pick up the change automatically.</p>
+            <p className="max-w-lg text-sm text-ink-300">{person.templateCount} face(s) were added to the recognition gallery. Running cameras pick up the change automatically.</p>
+            <div className="w-full max-w-lg text-left">
+              <EnrolledFaces personId={person.id} templates={person.templates} />
+            </div>
             <div className="flex gap-2">
               <Button onClick={() => router.push(`/persons/${person.id}`)}>View registration</Button>
               <Button variant="secondary" onClick={() => { setPerson(null); setDone(false); }}>
