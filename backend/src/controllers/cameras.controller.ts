@@ -4,7 +4,8 @@ import * as cameras from '../services/cameras.service';
 import { parse } from '../utils/errors';
 import { clientIp, created, ok } from '../utils/http';
 import { idParam } from '../validators/users.validators';
-import { createCameraSchema, listCamerasSchema, testDraftSchema, updateCameraSchema } from '../validators/cameras.validators';
+import { createCameraSchema, cpPlusSchema, listCamerasSchema, testDraftSchema, updateCameraSchema } from '../validators/cameras.validators';
+import { addCpPlusCameras } from '../services/cpPlus';
 
 export async function list(req: Request, res: Response) {
   const { items, meta, sites } = await cameras.listCameras(authOf(req), parse(listCamerasSchema, req.query));
@@ -37,6 +38,10 @@ export async function testDraft(req: Request, res: Response) {
 
 export async function discover(req: Request, res: Response) {
   ok(res, await cameras.discoverLanPorts());
+}
+
+export async function enrollCpPlus(req: Request, res: Response) {
+  created(res, await addCpPlusCameras(authOf(req), parse(cpPlusSchema, req.body), clientIp(req)));
 }
 
 export async function start(req: Request, res: Response) {

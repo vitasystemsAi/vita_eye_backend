@@ -72,6 +72,20 @@ function UsbCameraPreview({ deviceId }: { deviceId: string }) {
   );
 }
 
+type LanDiscover = { cameras: Array<{ ip: string; name: string; streamUrl: string; source: 'onvif' | 'rtsp' | 'http' }>; computerAddresses?: string[]; notice?: string | null };
+
+/** The PC with the cable answers on localhost. A page opened from another computer falls back to that computer's server. */
+async function discoverFromThisComputer(): Promise<LanDiscover> {
+  try {
+    const local = await fetch('http://127.0.0.1:47915/discover', { method: 'POST', signal: AbortSignal.timeout(55000) });
+    if (local.ok) return (await local.json()) as LanDiscover;
+  } catch {
+    /* Vita Eye is not running on the PC where this browser is open. */
+  }
+  const { data } = await api.post<LanDiscover>('/cameras/discover-lan-port', {}, { signal: AbortSignal.timeout(55000) });
+  return data;
+}
+
 function lanStreamUrl(protocol: LanProtocol, host: string, port: string, path: string): string {
   const defaults = LAN_DEFAULTS[protocol];
   const scheme = protocol === 'http' ? 'http' : protocol === 'rtsps' ? 'rtsps' : 'rtsp';
@@ -138,6 +152,8 @@ export interface CameraPayload {
   clearCredentials?: boolean;
   samplingFps: number;
   schedule: { enabled: boolean; days: number[]; start: string; end: string; timezone: string } | null;
+  /** Addresses chosen from CP Plus auto-detect. The server adds each one and starts monitoring. */
+  cpPlusIps?: string[];
 }
 
 export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; onSubmit: (p: CameraPayload) => Promise<void>; onCancel: () => void }) {
@@ -149,6 +165,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
   const [detecting, setDetecting] = useState(false);
   const [previewId, setPreviewId] = useState('');
   const [lanCameras, setLanCameras] = useState<Array<{ ip: string; name: string; streamUrl: string; source: 'onvif' | 'rtsp' | 'http' }>>([]);
+  const [selectedIps, setSelectedIps] = useState<string[]>([]);
   const [lanNotice, setLanNotice] = useState<string | null>(null);
   const [findingLan, setFindingLan] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -193,6 +210,9 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
   const directUrl = type === 'RTSP' || type === 'ONVIF' || type === 'HTTP_MJPEG';
   const usbDeviceId = useWatch({ control, name: 'usbDeviceId' });
   const lanPortUrl = useWatch({ control, name: 'lanPortUrl' });
+  useEffect(() => {
+    if (!camera && type === 'LAN_PORT' && !getValues('cameraName').trim()) setValue('cameraName', 'CP Plus');
+  }, [camera, type, getValues, setValue]);
   const lanProtocolField = register('lanProtocol');
 
   async function detectUsb() {
@@ -234,10 +254,16 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
     setLanNotice(null);
     setFindingLan(true);
     try {
-      const { data } = await api.post<{ cameras: Array<{ ip: string; name: string; streamUrl: string; source: 'onvif' | 'rtsp' | 'http' }> }>('/cameras/discover-lan-port', {}, { signal: AbortSignal.timeout(45000) });
+      const data = await discoverFromThisComputer();
       setLanCameras(data.cameras);
-      if (!data.cameras.length) {
-        setLanNotice('No camera answered on this computer’s LAN ports. Plug the camera into the Ethernet port, wait for the link light, then detect again.');
+      setSelectedIps(data.cameras.map((item) => item.ip));
+      if (!getValues('cameraName').trim()) setValue('cameraName', data.cameras.length === 1 ? `CP Plus ${data.cameras[0]?.ip ?? ''}`.trim() : 'CP Plus cameras');
+      const here = data.computerAddresses?.length ? data.computerAddresses.join(', ') : 'this computer';
+      if (data.notice) {
+        setLanNotice(data.notice);
+        if (!data.cameras.length) return;
+      } else if (!data.cameras.length) {
+        setLanNotice(`No camera answered on ${here}. Vita Eye must be running on the PC that has the LAN cable. Opening this website from another PC cannot see that cable. Power the camera with the 12V adapter and wait for the link light.`);
         return;
       }
       const current = getValues('lanPortUrl');
@@ -336,7 +362,21 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
       setError('usbDeviceId', { message: 'Detect the USB cameras and select the one shown in the preview' });
       return;
     }
-    if (v.cameraType === 'LAN_PORT' && !v.lanPortUrl) {
+    if (!camera && v.cameraType === 'LAN_PORT') {
+      if (!v.username.trim()) {
+        setError('username', { message: 'Enter the CP Plus username' });
+        return;
+      }
+      if (!v.password) {
+        setError('password', { message: 'Enter the CP Plus password' });
+        return;
+      }
+      if (!selectedIps.length) {
+        setError('lanPortUrl', { message: 'Auto detect the CP Plus cameras and leave at least one selected' });
+        return;
+      }
+    }
+    if (v.cameraType === 'LAN_PORT' && !v.lanPortUrl && camera) {
       setError('lanPortUrl', { message: 'Detect the LAN port cameras and select one' });
       return;
     }
@@ -362,11 +402,17 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
         payload.password = v.password;
       }
     } else if (v.cameraType === 'LAN_PORT') {
-      if (v.lanPortUrl) payload.streamUrl = v.lanPortUrl;
-      if (v.clearCredentials) payload.clearCredentials = true;
-      else if (v.username) {
+      if (!camera) {
+        payload.cpPlusIps = selectedIps;
         payload.username = v.username;
         payload.password = v.password;
+      } else {
+        if (v.lanPortUrl) payload.streamUrl = v.lanPortUrl;
+        if (v.clearCredentials) payload.clearCredentials = true;
+        else if (v.username) {
+          payload.username = v.username;
+          payload.password = v.password;
+        }
       }
     } else if (directUrl) {
       if (v.streamUrl) payload.streamUrl = v.streamUrl;
@@ -401,7 +447,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
             <option value="BROWSER">Browser / laptop webcam (operator device)</option>
             <option value="USB">USB / USB-C cable camera</option>
             <option value="LAN">LAN port camera (direct IP)</option>
-            <option value="LAN_PORT">LAN port (auto IP)</option>
+            <option value="LAN_PORT">CP Plus (auto detect)</option>
             <option value="RTSP">IP camera — RTSP</option>
             <option value="ONVIF">ONVIF camera (RTSP profile URL)</option>
             <option value="HTTP_MJPEG">HTTP MJPEG stream</option>
@@ -494,7 +540,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
                 <option value="http">HTTP MJPEG</option>
               </Select>
             </Field>
-            <Field label="Camera IP" error={errors.lanHost?.message} hint={camera?.streamReference ? `Current: ${camera.streamReference}` : '192.168.1.64 — the address of the camera on the LAN'}>
+            <Field label="Camera IP" error={errors.lanHost?.message} hint={camera?.streamReference ? `Current: ${camera.streamReference}` : 'Use the address from the camera website. This computer must be on that same network. “Not secure” in Edge is normal for that page.'}>
               <Input {...register('lanHost')} className="font-mono" placeholder="192.168.1.64" autoComplete="off" />
             </Field>
             <Field label="Port" error={errors.lanPort?.message}>
@@ -526,36 +572,42 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
           <input type="hidden" {...register('lanPortUrl')} />
           <div className="flex flex-wrap items-center gap-3">
             <Button variant="secondary" loading={findingLan} onClick={() => void detectLanPort()}>
-              Detect LAN port cameras
+              Auto detect
             </Button>
             {lanNotice && <p className="text-xs text-amber-300">{lanNotice}</p>}
           </div>
           <p className="text-xs text-ink-400">
-            Plug the camera into this computer’s Ethernet port, or leave it on the same network. Detect lists CP Plus cameras from their website and RTSP port. Use the same username and password as the camera website. The direct-IP LAN option is unchanged.
+            Select CP Plus, enter the username and password from the camera website, then Auto detect. Each selected camera is added and monitoring starts. Run Vita Eye on the PC that has the LAN cable.
           </p>
           {camera?.streamReference && !lanPortUrl && <p className="text-xs text-ink-400">Current stream: {camera.streamReference}</p>}
           {errors.lanPortUrl && <p className="text-xs text-red-400">{errors.lanPortUrl.message}</p>}
           {lanCameras.length > 0 && (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {lanCameras.map((item) => {
-                const selected = lanPortUrl === item.streamUrl;
+                const selected = camera ? lanPortUrl === item.streamUrl : selectedIps.includes(item.ip);
                 return (
                   <button
                     key={item.ip}
                     type="button"
-                    onClick={() => setValue('lanPortUrl', item.streamUrl, { shouldValidate: true })}
+                    onClick={() => {
+                      if (camera) {
+                        setValue('lanPortUrl', item.streamUrl, { shouldValidate: true });
+                        return;
+                      }
+                      setSelectedIps((current) => (current.includes(item.ip) ? current.filter((ip) => ip !== item.ip) : [...current, item.ip]));
+                    }}
                     className={`rounded-lg px-3 py-2 text-left ring-1 ${selected ? 'bg-brand-600/15 text-brand-100 ring-brand-500/50' : 'text-ink-200 ring-ink-600 hover:bg-ink-800'}`}
                   >
                     <span className="block text-sm font-medium">{item.name}</span>
                     <span className="block truncate font-mono text-xs text-ink-400">{item.ip}</span>
-                    <span className="mt-1 block text-[11px]">{selected ? 'Selected' : item.source === 'onvif' ? 'Found automatically' : 'Port open — select'}</span>
+                    <span className="mt-1 block text-[11px]">{selected ? 'Selected for monitoring' : 'Select'}</span>
                   </button>
                 );
               })}
             </div>
           )}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Field label="Username" error={errors.username?.message} hint={camera?.hasCredentials ? 'Stored encrypted — leave blank to keep' : 'Only if the camera asks for a login'}>
+            <Field label="Username" error={errors.username?.message} hint={camera?.hasCredentials ? 'Stored encrypted — leave blank to keep' : 'The username from the CP Plus website'}>
               <Input {...register('username')} autoComplete="off" />
             </Field>
             <Field label="Password" error={errors.password?.message}>
@@ -656,7 +708,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
           Cancel
         </Button>
         <Button type="submit" loading={isSubmitting}>
-          {camera ? 'Save changes' : 'Add camera'}
+          {camera ? 'Save changes' : type === 'LAN_PORT' ? 'Add for monitoring' : 'Add camera'}
         </Button>
       </div>
     </form>

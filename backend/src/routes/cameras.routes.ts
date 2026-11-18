@@ -10,6 +10,7 @@ r.get('/', requirePermission('cameras:view'), c.list);
 r.post('/', requirePermission('cameras:manage'), c.create);
 r.post('/test-connection', sensitiveLimiter, requirePermission('cameras:manage'), c.testDraft);
 r.post('/discover-lan-port', requirePermission('cameras:manage'), c.discover);
+r.post('/cp-plus', requirePermission('cameras:manage'), c.enrollCpPlus);
 r.get('/:id', requirePermission('cameras:view'), c.get);
 r.patch('/:id', requirePermission('cameras:manage'), c.update);
 r.delete('/:id', requirePermission('cameras:manage'), c.remove);

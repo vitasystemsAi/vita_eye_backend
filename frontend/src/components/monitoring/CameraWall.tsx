@@ -9,7 +9,7 @@ import { errorMessage } from '@/lib/api';
 import { isCameraBusyError, useMonitor } from '@/lib/monitor';
 import { isLocalCamera, type Camera, type CameraType } from '@/lib/types';
 
-const TYPE_LABEL: Record<CameraType, string> = { BROWSER: 'Browser', USB: 'USB', LAN: 'LAN', LAN_PORT: 'LAN port', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
+const TYPE_LABEL: Record<CameraType, string> = { BROWSER: 'Browser', USB: 'USB', LAN: 'LAN', LAN_PORT: 'CP Plus', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
 const PREFS_KEY = 'vita.monitor.wall';
 
 type Mode = 'wall' | 'single';

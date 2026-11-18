@@ -15,7 +15,7 @@ import { useApi, useDebounced } from '@/lib/hooks';
 import { useSocketEvent } from '@/lib/socket';
 import { isLocalCamera, type Camera, type CameraStatus } from '@/lib/types';
 
-const TYPE_LABEL: Record<Camera['cameraType'], string> = { BROWSER: 'Browser', USB: 'USB', LAN: 'LAN', LAN_PORT: 'LAN port', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
+const TYPE_LABEL: Record<Camera['cameraType'], string> = { BROWSER: 'Browser', USB: 'USB', LAN: 'LAN', LAN_PORT: 'CP Plus', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
 
 function ActionsMenu({ open, onToggle, children }: { open: boolean; onToggle: () => void; children: ReactNode }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -125,6 +125,26 @@ function CamerasView() {
   }
 
   async function save(payload: CameraPayload) {
+    if (payload.cpPlusIps?.length) {
+      const { data } = await api.post<{ added: Array<{ monitoring: boolean }>; failed: Array<{ ip: string; error: string }> }>(
+        '/cameras/cp-plus',
+        {
+          location: payload.location,
+          site: payload.site,
+          samplingFps: payload.samplingFps,
+          username: payload.username,
+          password: payload.password,
+          ips: payload.cpPlusIps,
+        },
+        { signal: AbortSignal.timeout(120000) },
+      );
+      const monitoring = data.added.filter((camera) => camera.monitoring).length;
+      const problem = data.failed.length ? `${data.failed.length} could not be added.` : data.added.length === monitoring ? undefined : 'Added, but monitoring did not start for every camera.';
+      notify('success', `${data.added.length} CP Plus camera${data.added.length === 1 ? '' : 's'} added`, problem ?? 'Monitoring is on.');
+      setEditing(null);
+      void reload();
+      return;
+    }
     if (editing === 'new') {
       await api.post<Camera>('/cameras', payload);
       notify('success', 'Camera added');

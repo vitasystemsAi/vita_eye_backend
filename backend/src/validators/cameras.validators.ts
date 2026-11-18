@@ -68,3 +68,15 @@ export const listCamerasSchema = paginationSchema.extend({
   type: z.enum(cameraTypes).optional(),
   search: z.string().trim().max(100).optional(),
 });
+
+const ipv4 = z.string().trim().regex(/^(?:\d{1,3}\.){3}\d{1,3}$/, 'Enter a camera IP address');
+
+/** CP Plus auto-detect: the login from the camera website, and the addresses the search returned. */
+export const cpPlusSchema = z.object({
+  location: z.string().trim().min(2).max(160),
+  site: z.string().trim().max(120).optional().nullable(),
+  samplingFps: z.number().min(0.2).max(15).optional(),
+  username: z.string().trim().min(1).max(128),
+  password: z.string().min(1).max(256),
+  ips: z.array(ipv4).min(1).max(24),
+});

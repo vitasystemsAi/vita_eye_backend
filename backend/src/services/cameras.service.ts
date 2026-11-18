@@ -5,7 +5,7 @@ import type { CameraSchedule, CameraType } from '../models/Camera';
 import { cipher } from '../utils/cipher';
 import { AppError } from '../utils/errors';
 import { pageMeta } from '../utils/http';
-import { assertCameraUrlAllowed, withCredentials } from '../utils/network';
+import { assertCameraReachable, assertCameraUrlAllowed, computerIpv4, withCredentials } from '../utils/network';
 import { isWithinSchedule } from '../utils/schedule';
 import { testStream } from './ai.client';
 import { audit } from './audit.service';
@@ -19,7 +19,7 @@ import {
   stopNetworkStream,
   urlNetworks,
 } from './ingestion.service';
-import { discoverLanPortCameras } from './lanPortDiscover';
+import { alignEthernetTo, discoverLanPortCameras, prepareDirectEthernet } from './lanPortDiscover';
 import { signMonitorTicket } from './monitorTicket.service';
 import { emitToPreview } from '../sockets/emitter';
 import { forgetPreview } from '../sockets/previewCache';
@@ -83,7 +83,28 @@ export async function listCameras(
 }
 
 export async function discoverLanPorts() {
-  return { cameras: await discoverLanPortCameras() };
+  const found = await discoverLanPortCameras();
+  return { cameras: found.cameras, notice: found.notice, computerAddresses: computerIpv4().map((item) => item.address) };
+}
+
+/** Reach the camera at the address it reported. Join that subnet only after the address is known. */
+async function reachable(url: URL) {
+  const setup = await prepareDirectEthernet();
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  try {
+    await assertCameraReachable(url);
+    return;
+  } catch (err) {
+    const aligned = await alignEthernetTo(host);
+    try {
+      await assertCameraReachable(url);
+      return;
+    } catch (again) {
+      const message = [aligned, setup, again instanceof AppError ? again.message : (again as Error).message].filter(Boolean).join(' ');
+      if (err instanceof AppError || again instanceof AppError) throw AppError.validation([{ path: 'streamUrl', message }], message);
+      throw again;
+    }
+  }
 }
 
 export async function getCamera(ctx: AuthContext, id: string) {
@@ -120,6 +141,7 @@ export async function createCamera(ctx: AuthContext, input: CameraInput & { came
   if (NETWORK_TYPES.has(input.cameraType)) {
     const nets = urlNetworks(input.cameraType);
     streamReference = (await assertCameraUrlAllowed(input.streamUrl!, input.cameraType, nets.allowed, nets.blocked)).toString();
+    await reachable(new URL(streamReference));
   } else if (input.cameraType === 'USB') {
     streamReference = usbDeviceReference(input.streamUrl);
   }
@@ -174,6 +196,7 @@ export async function updateCamera(ctx: AuthContext, id: string, input: CameraIn
     if (input.streamUrl) {
       const nets = urlNetworks(cam.cameraType);
       changes.streamReference = (await assertCameraUrlAllowed(input.streamUrl, cam.cameraType, nets.allowed, nets.blocked)).toString();
+      await reachable(new URL(changes.streamReference));
     }
     if (input.clearCredentials) changes.encryptedCredentials = null;
     else if (input.username) {
@@ -268,6 +291,7 @@ export async function testDraftConnection(
 ) {
   const nets = urlNetworks(input.cameraType);
   await assertCameraUrlAllowed(input.streamUrl, input.cameraType, nets.allowed, nets.blocked);
+  await reachable(new URL(input.streamUrl));
   let creds: { username?: string; password?: string } | null = null;
   if (!input.clearCredentials && input.username) {
     creds = { username: input.username, password: input.password ?? '' };
@@ -311,6 +335,7 @@ export async function startMonitoring(ctx: AuthContext, id: string, ip: string |
       message = 'Monitoring enabled; stream will start when the schedule window opens';
     } else {
       try {
+        if (cam.streamReference) await reachable(new URL(cam.streamReference));
         await startNetworkStream(cam);
         message = 'Stream ingestion started';
       } catch (err) {

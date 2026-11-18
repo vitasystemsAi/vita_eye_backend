@@ -10,6 +10,7 @@ import { closeQueues, scheduleMaintenance } from './jobs/queues';
 import { startNotificationWorker } from './jobs/notification.worker';
 import { startMaintenanceWorker } from './jobs/maintenance.worker';
 import { syncRbacCatalogue } from './db/syncRbac';
+import { startLocalLanPortDiscover } from './services/lanPortDiscover';
 
 async function main() {
   await sequelize.authenticate();
@@ -29,6 +30,7 @@ async function main() {
   await scheduleMaintenance();
 
   server.listen(env.BACKEND_PORT, env.BACKEND_HOST, () => logger.info(`VITA EYE API listening on http://${env.BACKEND_HOST}:${env.BACKEND_PORT}`));
+  startLocalLanPortDiscover();
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {

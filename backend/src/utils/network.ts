@@ -1,4 +1,6 @@
 import dns from 'node:dns/promises';
+import net from 'node:net';
+import os from 'node:os';
 import ipaddr from 'ipaddr.js';
 import { AppError } from './errors';
 
@@ -62,6 +64,72 @@ export async function assertCameraUrlAllowed(rawUrl: string, cameraType: string,
     }
   }
   return url;
+}
+
+export function computerIpv4(): { address: string; netmask: string }[] {
+  const found: { address: string; netmask: string }[] = [];
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (String(entry.family) !== 'IPv4' || entry.internal) continue;
+      found.push({ address: entry.address, netmask: entry.netmask });
+    }
+  }
+  return found;
+}
+
+function ipv4ToInt(ip: string): number {
+  return ip.split('.').reduce((acc, part) => ((acc << 8) + Number(part)) >>> 0, 0);
+}
+
+function sameLan(ip: string, local: { address: string; netmask: string }): boolean {
+  const mask = ipv4ToInt(local.netmask);
+  return (ipv4ToInt(ip) & mask) === (ipv4ToInt(local.address) & mask);
+}
+
+function tcpOpen(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host, port, family: 4 });
+    const finish = (open: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(open);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+}
+
+function streamPort(url: URL): number {
+  if (url.port) return Number(url.port);
+  if (url.protocol === 'https:') return 443;
+  if (url.protocol === 'rtsp:' || url.protocol === 'rtsps:') return 554;
+  return 80;
+}
+
+/**
+ * A camera website on another subnet can still open in a browser and show "Not secure".
+ * That label is HTTP, not a Vita Eye failure. This computer has to be on the camera's network.
+ */
+export async function assertCameraReachable(url: URL): Promise<void> {
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  if (!ipaddr.IPv4.isValidFourPartDecimal(host)) return;
+  const port = streamPort(url);
+  if (await tcpOpen(host, port, 2500)) return;
+  const locals = computerIpv4();
+  const here = locals.map((item) => item.address).join(', ') || 'no network address';
+  const onLan = locals.some((item) => sameLan(host, item));
+  const website = port !== 80 && (await tcpOpen(host, 80, 800));
+  let message: string;
+  if (!onLan) {
+    message = `${host} is not on this computer’s network (${here}). A browser can still open that camera on another device and show “Not secure” because the page is HTTP. Connect this computer to the same network as ${host}, or change the camera to an address next to ${here}.`;
+  } else if (website) {
+    message = `The camera website at ${host} answers, but video port ${port} does not. In the CP Plus page, enable RTSP. “Not secure” in the browser is that website and is normal.`;
+  } else {
+    message = `${host} did not answer from this computer (${here}). Check that the camera is on and that this computer is on the same network. “Not secure” in the browser is only the camera website.`;
+  }
+  throw AppError.validation([{ path: 'streamUrl', message }], message);
 }
 
 /** Inserts credentials into a stream URL (only ever sent to the internal AI service). */
