@@ -108,28 +108,47 @@ function streamPort(url: URL): number {
   return 80;
 }
 
+function privateIpv4(host: string): boolean {
+  const [a, b] = host.split('.').map((part) => Number(part));
+  if (a === 10 || (a === 192 && b === 168)) return true;
+  return a === 172 && b >= 16 && b <= 31;
+}
+
+export type CameraReachability = { open: boolean; offsite: boolean; message: string | null };
+
 /**
- * A camera website on another subnet can still open in a browser and show "Not secure".
- * That label is HTTP, not a Vita Eye failure. This computer has to be on the camera's network.
+ * The website often runs in Docker (172.30.x) while the camera stays on the office LAN.
+ * A private camera this server cannot see is not a bad address: a Vita Eye process on that
+ * LAN opens it. A camera on this server's own subnet that does not answer is a real failure.
  */
-export async function assertCameraReachable(url: URL): Promise<void> {
+export async function describeCameraReachability(url: URL): Promise<CameraReachability> {
   const host = url.hostname.replace(/^\[|\]$/g, '');
-  if (!ipaddr.IPv4.isValidFourPartDecimal(host)) return;
+  if (!ipaddr.IPv4.isValidFourPartDecimal(host)) return { open: true, offsite: false, message: null };
   const port = streamPort(url);
-  if (await tcpOpen(host, port, 2500)) return;
+  if (await tcpOpen(host, port, 2500)) return { open: true, offsite: false, message: null };
   const locals = computerIpv4();
   const here = locals.map((item) => item.address).join(', ') || 'no network address';
   const onLan = locals.some((item) => sameLan(host, item));
-  const website = port !== 80 && (await tcpOpen(host, 80, 800));
-  let message: string;
-  if (!onLan) {
-    message = `${host} is not on this computer’s network (${here}). A browser can still open that camera on another device and show “Not secure” because the page is HTTP. Connect this computer to the same network as ${host}, or change the camera to an address next to ${here}.`;
-  } else if (website) {
-    message = `The camera website at ${host} answers, but video port ${port} does not. In the CP Plus page, enable RTSP. “Not secure” in the browser is that website and is normal.`;
-  } else {
-    message = `${host} did not answer from this computer (${here}). Check that the camera is on and that this computer is on the same network. “Not secure” in the browser is only the camera website.`;
+  if (!onLan && privateIpv4(host)) {
+    const prefix = host.split('.').slice(0, 3).join('.');
+    return {
+      open: false,
+      offsite: true,
+      message: `${host} is on the office network. This server (${here}) cannot open it from here. Vita Eye on a computer with a ${prefix}.x address will open the camera and run detection.`,
+    };
   }
-  throw AppError.validation([{ path: 'streamUrl', message }], message);
+  const website = port !== 80 && (await tcpOpen(host, 80, 800));
+  const message = website
+    ? `The camera website at ${host} answers, but video port ${port} does not. In the CP Plus page, enable RTSP. “Not secure” in the browser is that website and is normal.`
+    : `${host} did not answer from this computer (${here}). Check that the camera is on and that this computer is on the same network. “Not secure” in the browser is only the camera website.`;
+  return { open: false, offsite: false, message };
+}
+
+/** A camera website on another subnet can still open in a browser. That is not a Vita Eye failure. */
+export async function assertCameraReachable(url: URL): Promise<void> {
+  const result = await describeCameraReachability(url);
+  if (result.open || result.offsite) return;
+  throw AppError.validation([{ path: 'streamUrl', message: result.message ?? 'The camera did not answer' }], result.message ?? 'The camera did not answer');
 }
 
 /** Inserts credentials into a stream URL (only ever sent to the internal AI service). */

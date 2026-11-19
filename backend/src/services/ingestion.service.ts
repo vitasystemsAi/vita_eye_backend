@@ -7,7 +7,7 @@ import { emitToOrg, emitToPreview, previewWatcherCount } from '../sockets/emitte
 import { rememberPreview } from '../sockets/previewCache';
 import { cipher, credentialsAad } from '../utils/cipher';
 import { AppError } from '../utils/errors';
-import { assertCameraUrlAllowed, parseCidrs, withCredentials } from '../utils/network';
+import { assertCameraUrlAllowed, describeCameraReachability, parseCidrs, withCredentials } from '../utils/network';
 import { isWithinSchedule } from '../utils/schedule';
 import { inferenceSlots, listStreams, policyFrom, processFrame, pushPolicy, startStream, stopStream, type FrameFace } from './ai.client';
 import { recordEvents } from './detections.service';
@@ -79,7 +79,12 @@ export async function resolveStreamUrl(cameraId: string): Promise<string> {
   return withCredentials(cam.streamReference, creds);
 }
 
-export async function startNetworkStream(camera: Camera) {
+export async function startNetworkStream(camera: Camera): Promise<'started' | 'offsite'> {
+  if (camera.streamReference) {
+    const reach = await describeCameraReachability(new URL(camera.streamReference));
+    // The cloud server must not mark the camera failed when only the office PC can see it.
+    if (reach.offsite) return 'offsite';
+  }
   const settings = await getSettings(camera.organizationId);
   await startStream({
     cameraId: camera.id,
@@ -89,6 +94,7 @@ export async function startNetworkStream(camera: Camera) {
     galleryVersion: await galleryVersion(camera.organizationId),
     policy: policyFrom(settings),
   });
+  return 'started';
 }
 
 export async function stopNetworkStream(camera: Camera) {
@@ -246,7 +252,8 @@ async function reconcileTenantCameras(getRunning: RunningStreams, organizationAc
     const inSchedule = isWithinSchedule(cam.schedule);
     if (inSchedule && !running.has(cam.id)) {
       try {
-        await startNetworkStream(cam);
+        const started = await startNetworkStream(cam);
+        if (started === 'offsite') continue;
       } catch (err) {
         await setCameraStatus(cam, 'ERROR', publicCameraError(err));
       }

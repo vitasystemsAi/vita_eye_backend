@@ -5,7 +5,7 @@ import type { CameraSchedule, CameraType } from '../models/Camera';
 import { cipher } from '../utils/cipher';
 import { AppError } from '../utils/errors';
 import { pageMeta } from '../utils/http';
-import { assertCameraReachable, assertCameraUrlAllowed, computerIpv4, withCredentials } from '../utils/network';
+import { assertCameraUrlAllowed, computerIpv4, describeCameraReachability, withCredentials } from '../utils/network';
 import { isWithinSchedule } from '../utils/schedule';
 import { testStream } from './ai.client';
 import { audit } from './audit.service';
@@ -92,20 +92,13 @@ export async function discoverLanPorts() {
 async function reachable(url: URL) {
   const setup = await prepareDirectEthernet();
   const host = url.hostname.replace(/^\[|\]$/g, '');
-  try {
-    await assertCameraReachable(url);
-    return;
-  } catch (err) {
-    const aligned = await alignEthernetTo(host);
-    try {
-      await assertCameraReachable(url);
-      return;
-    } catch (again) {
-      const message = [aligned, setup, again instanceof AppError ? again.message : (again as Error).message].filter(Boolean).join(' ');
-      if (err instanceof AppError || again instanceof AppError) throw AppError.validation([{ path: 'streamUrl', message }], message);
-      throw again;
-    }
-  }
+  let result = await describeCameraReachability(url);
+  if (result.open || result.offsite) return result;
+  const aligned = await alignEthernetTo(host);
+  result = await describeCameraReachability(url);
+  if (result.open || result.offsite) return result;
+  const message = [aligned, setup, result.message].filter(Boolean).join(' ');
+  throw AppError.validation([{ path: 'streamUrl', message }], message);
 }
 
 export async function getCamera(ctx: AuthContext, id: string) {
@@ -292,7 +285,10 @@ export async function testDraftConnection(
 ) {
   const nets = urlNetworks(input.cameraType);
   await assertCameraUrlAllowed(input.streamUrl, input.cameraType, nets.allowed, nets.blocked);
-  await reachable(new URL(input.streamUrl));
+  const reach = await reachable(new URL(input.streamUrl));
+  if (reach.offsite) {
+    return { ok: true, tested: false, message: reach.message };
+  }
   let creds: { username?: string; password?: string } | null = null;
   if (!input.clearCredentials && input.username) {
     creds = { username: input.username, password: input.password ?? '' };
@@ -337,8 +333,10 @@ export async function startMonitoring(ctx: AuthContext, id: string, ip: string |
     } else {
       try {
         if (cam.streamReference) await reachable(new URL(cam.streamReference));
-        await startNetworkStream(cam);
-        message = 'Stream ingestion started';
+        const started = await startNetworkStream(cam);
+        message = started === 'offsite'
+          ? 'Monitoring is on. This server is not on the camera’s network, so the Vita Eye computer on that network will open the stream.'
+          : 'Stream ingestion started';
       } catch (err) {
         await setCameraStatus(cam, 'ERROR', publicCameraError(err));
         throw err;

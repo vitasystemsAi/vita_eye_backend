@@ -306,7 +306,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
     setTesting(true);
     setTestResult(null);
     try {
-      const { data } = await api.post<{ ok: boolean; tested: boolean; error?: string; width?: number; height?: number; streamUrl?: string }>(
+      const { data } = await api.post<{ ok: boolean; tested: boolean; error?: string; message?: string; width?: number; height?: number; streamUrl?: string }>(
         '/cameras/test-connection',
         {
           cameraId: camera?.id,
@@ -333,7 +333,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
       }
       setTestResult(
         data.ok
-          ? { ok: true, text: data.streamUrl ? `Connected on ${data.streamUrl}. That path will be saved.` : data.width ? `Connected. Received a ${data.width}×${data.height} frame.` : 'Connected.' }
+          ? { ok: true, text: data.message || (data.streamUrl ? `Connected on ${data.streamUrl}. That path will be saved.` : data.width ? `Connected. Received a ${data.width}×${data.height} frame.` : 'Connected.') }
           : { ok: false, text: data.error || 'The stream could not be opened.' },
       );
     } catch (err) {
