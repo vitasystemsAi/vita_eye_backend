@@ -249,23 +249,42 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
   const poseRef = useRef<PoseReading | null>(null);
   const facingRef = useRef<Facing>('user');
   const switchingRef = useRef(false);
+  const streamRef = useRef<MediaStream | null>(null);
+  const aliveRef = useRef(true);
+  const runRef = useRef(0);
   useEffect(() => {
     imagesRef.current = images;
   }, [images]);
 
   const stopCamera = useCallback(() => {
+    runRef.current += 1;
+    const current = streamRef.current;
+    streamRef.current = null;
+    current?.getTracks().forEach((track) => track.stop());
+    if (videoRef.current) videoRef.current.srcObject = null;
     setLive(null);
-    setStream((s) => {
-      s?.getTracks().forEach((t) => t.stop());
-      return null;
-    });
+    setStream(null);
     if (cameraHeld.current) {
       cameraHeld.current = false;
       restoreDeviceCamera();
     }
   }, [restoreDeviceCamera]);
 
-  useEffect(() => () => stopCamera(), [stopCamera]);
+  useEffect(() => {
+    aliveRef.current = true;
+    const release = () => stopCamera();
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') release();
+    };
+    window.addEventListener('pagehide', release);
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      aliveRef.current = false;
+      window.removeEventListener('pagehide', release);
+      document.removeEventListener('visibilitychange', onHide);
+      release();
+    };
+  }, [stopCamera]);
   useEffect(() => () => imagesRef.current.forEach((i) => URL.revokeObjectURL(i.url)), []);
   useEffect(() => {
     const video = videoRef.current;
@@ -504,14 +523,25 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
     const actual: Facing = mirror ? 'user' : 'environment';
     facingRef.current = actual;
     setFacing(actual);
-    setStream((current) => {
-      if (current && current !== nextStream) current.getTracks().forEach((track) => track.stop());
-      return nextStream;
-    });
+    const current = streamRef.current;
+    if (current && current !== nextStream) current.getTracks().forEach((track) => track.stop());
+    streamRef.current = nextStream;
+    setStream(nextStream);
+  }
+
+  function currentRunOpen(run: number) {
+    return aliveRef.current && runRef.current === run;
+  }
+
+  function releaseHeldCamera() {
+    if (!cameraHeld.current) return;
+    cameraHeld.current = false;
+    restoreDeviceCamera();
   }
 
   async function startCamera() {
     if (starting || switchingRef.current) return;
+    const run = ++runRef.current;
     setStarting(true);
     setCamError(null);
     setFileError(null);
@@ -523,24 +553,35 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
       return;
     }
     // Let go of this phone's live-monitoring camera first. Face enrollment uses its own capture.
-    setLive(null);
-    setStream((current) => {
-      current?.getTracks().forEach((track) => track.stop());
-      return null;
-    });
-    if (!cameraHeld.current) {
-      await releaseDeviceCamera();
-      cameraHeld.current = true;
-    }
-    await sleep(200);
+    const previous = streamRef.current;
+    streamRef.current = null;
+    previous?.getTracks().forEach((track) => track.stop());
+    setStream(null);
     try {
-      applyStream(await acquireCamera(facingRef.current), facingRef.current);
-    } catch (err) {
-      if (cameraHeld.current) {
-        cameraHeld.current = false;
-        restoreDeviceCamera();
+      if (!currentRunOpen(run)) return;
+      if (!cameraHeld.current) {
+        cameraHeld.current = true;
+        await releaseDeviceCamera();
       }
-      setCamError(cameraErrorMessage(err));
+      if (!currentRunOpen(run)) {
+        releaseHeldCamera();
+        return;
+      }
+      await sleep(200);
+      if (!currentRunOpen(run)) {
+        releaseHeldCamera();
+        return;
+      }
+      const next = await acquireCamera(facingRef.current);
+      if (!currentRunOpen(run)) {
+        next.getTracks().forEach((track) => track.stop());
+        releaseHeldCamera();
+        return;
+      }
+      applyStream(next, facingRef.current);
+    } catch (err) {
+      releaseHeldCamera();
+      if (currentRunOpen(run)) setCamError(cameraErrorMessage(err));
     } finally {
       setStarting(false);
     }
@@ -555,17 +596,32 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
     setSwitching(true);
     setFileError(null);
     pauseUntilRef.current = performance.now() + 2000;
+    const run = runRef.current;
+    streamRef.current = null;
     stream?.getTracks().forEach((track) => track.stop());
     setStream(null);
-    await sleep(400);
     try {
-      applyStream(await acquireCamera(next, previousId), next);
+      await sleep(400);
+      if (!currentRunOpen(run)) return;
+      const opened = await acquireCamera(next, previousId);
+      if (!currentRunOpen(run)) {
+        opened.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      applyStream(opened, next);
       setLive(null);
       setPhase({ kind: 'align', text: 'Align your face' });
     } catch (err) {
+      if (!currentRunOpen(run)) return;
       try {
-        applyStream(await acquireCamera(previousFacing), previousFacing);
+        const fallback = await acquireCamera(previousFacing);
+        if (!currentRunOpen(run)) {
+          fallback.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        applyStream(fallback, previousFacing);
       } catch {
+        streamRef.current = null;
         setStream(null);
       }
       setFileError(cameraErrorMessage(err, true));
@@ -694,7 +750,14 @@ export function FaceCapture({ images, onChange }: { images: CapturedImage[]; onC
           <div className={`absolute inset-x-0 top-0 z-10 flex items-center justify-between gap-2 ${fullscreen ? 'px-3 pt-[max(0.75rem,env(safe-area-inset-top))]' : 'px-2 pt-2'}`}>
             <div className="flex min-w-0 items-center gap-2">
               {fullscreen && (
-                <button type="button" onClick={() => setImmersive(false)} className="shrink-0 rounded-full bg-black/70 px-3 py-1.5 text-xs font-medium text-white">
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopCamera();
+                    setImmersive(false);
+                  }}
+                  className="shrink-0 rounded-full bg-black/70 px-3 py-1.5 text-xs font-medium text-white"
+                >
                   {images.length >= AUTO_SHOTS ? 'Continue' : 'Back'}
                 </button>
               )}
