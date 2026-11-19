@@ -57,8 +57,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     minFaceSize: 48,
     minQuality: 0.4,
     minDetectionScore: 0.65,
-    temporalMinFrames: 3,
-    temporalWindowSec: 10,
+    temporalMinFrames: 1,
+    temporalWindowSec: 2,
     temporalAgreement: 0.7,
   },
   events: {

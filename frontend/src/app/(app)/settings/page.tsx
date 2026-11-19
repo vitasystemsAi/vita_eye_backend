@@ -43,7 +43,7 @@ const RECOGNITION_FIELDS: Array<{ key: NumKey<RecognitionSettings>; label: strin
   { key: 'minFaceSize', label: 'Minimum face size (px)', step: 1, min: 20, max: 1000, hint: 'Enrollment stays strict. A live camera still tries to match a face down to half this size.' },
   { key: 'minQuality', label: 'Minimum quality score', step: 0.05, min: 0, max: 1, hint: 'Used when judging a frame. Dim or distant faces are still compared with the gallery.' },
   { key: 'minDetectionScore', label: 'Minimum detector confidence', step: 0.01, min: 0.3, max: 1, hint: 'YuNet score. Live matching caps this so a distant face is not discarded.' },
-  { key: 'temporalMinFrames', label: 'Frames required to confirm', step: 1, min: 1, max: 30, hint: 'Agreeing frames for one pass. An unrecognized face needs two passes of this many frames before it is counted and a notification is sent.' },
+  { key: 'temporalMinFrames', label: 'Frames required to confirm', step: 1, min: 1, max: 30, hint: 'Agreeing frames before a face is counted. One frame confirms a clear look, so someone walking through a door is recorded immediately. A person who leaves sooner is still recorded from the frames already seen.' },
   { key: 'temporalWindowSec', label: 'Verification window (s)', step: 1, min: 1, max: 120, hint: 'Observations older than this are ignored' },
   { key: 'temporalAgreement', label: 'Required agreement', step: 0.05, min: 0.5, max: 1, hint: 'Share of frames that must agree on the label' },
 ];

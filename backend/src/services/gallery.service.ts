@@ -1,4 +1,5 @@
 import { Op } from 'sequelize';
+import { logger } from '../config/logger';
 import { redis } from '../config/redis';
 import { FaceTemplate, RegisteredPerson } from '../models';
 import { cipher, templateAad } from '../utils/cipher';
@@ -31,14 +32,24 @@ export async function loadGallery(organizationId: string) {
     include: [{ model: FaceTemplate.scope('withEmbedding'), as: 'templates', required: true }],
   });
   const templates = persons.flatMap((p) =>
-    (p.templates ?? []).map((t) => ({
-      templateId: t.id,
-      personId: p.id,
-      personName: p.personName,
-      modelVersion: t.modelVersion,
-      qualityScore: t.qualityScore,
-      embedding: cipher.decryptEmbedding(t.encryptedEmbedding, templateAad(t.id, p.id)),
-    })),
+    (p.templates ?? []).flatMap((t) => {
+      try {
+        return [
+          {
+            templateId: t.id,
+            personId: p.id,
+            personName: p.personName,
+            modelVersion: t.modelVersion,
+            qualityScore: t.qualityScore,
+            embedding: cipher.decryptEmbedding(t.encryptedEmbedding, templateAad(t.id, p.id)),
+          },
+        ];
+      } catch (err) {
+        // One unreadable enrollment must not stop live detection for every camera.
+        logger.warn({ templateId: t.id, personId: p.id, err }, 'Skipped a face template that could not be decrypted');
+        return [];
+      }
+    }),
   );
   return { version: await galleryVersion(organizationId), templates };
 }

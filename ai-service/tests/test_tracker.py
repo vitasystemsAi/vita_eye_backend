@@ -70,42 +70,33 @@ def test_known_leaving_before_quota_is_still_reported():
     assert tr.finalize(gone[0], P) is None
 
 
-def test_unknown_needs_two_passes_before_it_is_counted():
+def test_unknown_confirmed_as_soon_as_the_frame_quota_agrees():
     tr = CameraTracker()
     e = unit(1)
-    first = None
-    for i in range(3):
-        _, d = feed(tr, "UNKNOWN", float(i), sim=0.05, emb=e)
-        first = first or d
-    assert first is None, "the first agreeing pass must not record the face"
-
-    held = None
-    for i in range(3, 5):
-        _, d = feed(tr, "UNKNOWN", float(i), sim=0.05, emb=e)
-        held = held or d
-    assert held is None, "a partial second pass must not record the face"
-
-    _, decision = feed(tr, "UNKNOWN", 5.0, sim=0.05, emb=e)
-    assert decision is not None and decision.event_type == "UNKNOWN" and decision.frames_observed == 6
+    _, d1 = feed(tr, "UNKNOWN", 0.0, sim=0.05, emb=e)
+    _, d2 = feed(tr, "UNKNOWN", 1.0, sim=0.05, emb=e)
+    assert d1 is None and d2 is None
+    _, decision = feed(tr, "UNKNOWN", 2.0, sim=0.05, emb=e)
+    assert decision is not None and decision.event_type == "UNKNOWN" and decision.frames_observed == 3
 
 
-def test_unknown_leaving_before_second_pass_is_not_counted():
+def test_unknown_leaving_after_one_look_is_still_recorded():
     tr = CameraTracker()
     e = unit(7)
-    track, _ = feed(tr, "UNKNOWN", 0.0, sim=0.05, emb=e)
-    for i in range(1, 3):
-        feed(tr, "UNKNOWN", i * 0.1, sim=0.05, emb=e)
+    track, d1 = feed(tr, "UNKNOWN", 0.0, sim=0.05, emb=e)
+    assert d1 is None
     gone = tr.expire(5.0, P)
     assert [t.id for t in gone] == [track.id]
-    assert tr.finalize(gone[0], P) is None
+    decision = tr.finalize(gone[0], P)
+    assert decision is not None and decision.event_type == "UNKNOWN" and decision.frames_observed == 1
 
 
-def test_second_pass_can_recognise_a_registered_person():
+def test_registered_match_wins_before_the_unknown_quota():
     tr = CameraTracker()
-    for i in range(3):
+    for i in range(2):
         _, d = feed(tr, "UNKNOWN", float(i), sim=0.05, emb=unit(3))
         assert d is None
-    _, decision = feed(tr, "KNOWN", 3.0, "p1", sim=P.known_threshold + 0.15)
+    _, decision = feed(tr, "KNOWN", 2.0, "p1", sim=P.known_threshold + 0.15)
     assert decision is not None and decision.event_type == "KNOWN" and decision.person_id == "p1"
 
 
@@ -141,6 +132,16 @@ def test_same_track_followed_across_small_motion():
     t1, _ = feed(tr, "KNOWN", 0.0, "p1", box=(100, 100, 80, 80))
     t2, _ = feed(tr, "KNOWN", 1.0, "p1", box=(110, 104, 80, 80))
     assert t1.id == t2.id
+
+
+def test_fast_doorway_motion_keeps_the_same_track():
+    tr = CameraTracker()
+    t1, _ = feed(tr, "UNKNOWN", 0.0, box=(100, 100, 80, 80))
+    # About 1.5 face-widths later, which a walking person covers between samples.
+    t2, _ = feed(tr, "UNKNOWN", 0.2, box=(220, 110, 80, 80))
+    assert t1.id == t2.id
+    jumped, _ = feed(tr, "UNKNOWN", 0.4, box=(500, 100, 80, 80))
+    assert jumped.id != t1.id
 
 
 def test_low_quality_frames_do_not_count():

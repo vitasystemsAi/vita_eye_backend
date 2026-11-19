@@ -67,3 +67,11 @@ export const ROLE_LABELS: Record<string, string> = {
 export function tzOffsetMinutes(): number {
   return -new Date().getTimezoneOffset();
 }
+
+/** The cipher failure is about a saved face, not the camera connection. */
+export function friendlyCameraError(message: string): string {
+  if (message.includes('unable to authenticate data') || message.includes('Unsupported state')) {
+    return 'A saved face could not be opened. The camera keeps watching. Add that person again in Face Registration for their name to match.';
+  }
+  return message;
+}

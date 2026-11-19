@@ -9,12 +9,11 @@ escaping unrecorded:
 * a registered match that leaves the frame before reaching the frame quota is finalised from
   whatever usable observations it collected (the event carries ``frames_observed``).
 
-Each track emits at most one event. An unrecognized face is the exception to the single
-quota: it is only recorded after two separate agreeing passes (double verification). The
-first pass marks the track; the second pass, made of new frames only, is what can still
-match a registered person. Leaving before that second pass does not count the face and
-does not notify. Unknown faces that do pass both checks are de-duplicated against a
-short-term memory of recently reported unknown embeddings on the same camera.
+Each track emits at most one event. A clear face is confirmed as soon as the frame quota
+agrees, including an unrecognized face, so someone walking through a door is not held on
+"Verifying". A person who leaves before that quota is still recorded from the frames that
+were seen. Unknown faces are de-duplicated against a short-term memory of recently
+reported unknown embeddings on the same camera.
 """
 from __future__ import annotations
 
@@ -32,6 +31,8 @@ TRACK_TTL_SEC = 1.5
 MAX_TRACK_TTL_SEC = 8.0
 TTL_FRAME_INTERVALS = 2.5  # a track survives this many missed frames at slow sampling rates
 IOU_MATCH = 0.25
+# A person walking through a doorway can shift by nearly two face-widths between samples.
+CENTRE_MATCH_FACTOR = 1.8
 INSTANT_KNOWN_BOOST = 0.12  # similarity above known_threshold that confirms a match from one frame
 # A name already on a track is not replaced until the new person wins this many frames in a row.
 NAME_SWITCH_FRAMES = 3
@@ -73,8 +74,6 @@ class Track:
     evidence_frame: Optional[np.ndarray] = None
     evidence_bbox: Optional[tuple[int, int, int, int]] = None
     shown_person_id: Optional[str] = None
-    # Set when the first unrecognized pass agrees. The second pass uses only later frames.
-    unknown_verified_at: Optional[float] = None
 
     def appearance(self) -> Optional[np.ndarray]:
         """Unit mean of the recent embeddings on this track, used to keep a name on the right face."""
@@ -207,7 +206,7 @@ def centre_close(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> 
     acx, acy = a[0] + a[2] / 2, a[1] + a[3] / 2
     bcx, bcy = b[0] + b[2] / 2, b[1] + b[3] / 2
     dist = ((acx - bcx) ** 2 + (acy - bcy) ** 2) ** 0.5
-    return dist < 0.6 * max(a[2], a[3], b[2], b[3])
+    return dist < CENTRE_MATCH_FACTOR * max(a[2], a[3], b[2], b[3])
 
 
 class CameraTracker:
@@ -289,59 +288,30 @@ class CameraTracker:
         if not usable:
             return None
 
-        # A registered match that is already very strong is not held for a second pass.
-        if _strong_known(usable, policy) and track.unknown_verified_at is None:
-            return self._decide(track, usable, policy, now, final=True)
-
-        if track.unknown_verified_at is not None:
-            return self._second_unknown_pass(track, usable, policy, now, closing=False)
+        # A registered match that is already very strong is confirmed from that frame,
+        # even when earlier samples on the same pass had not named anyone yet.
+        if _strong_known(usable, policy):
+            last = usable[-1]
+            known = [o for o in usable if o.label == "KNOWN" and o.person_id == last.person_id]
+            return self._decide(track, known, policy, now, final=True, observed=len(usable))
 
         if len(usable) < policy.temporal_min_frames:
             return None
-
-        label, _person, ratio = _majority(usable)
-        if label == "UNKNOWN" and ratio >= policy.temporal_agreement:
-            # First verification only. Counting and notification wait for a second pass.
-            track.unknown_verified_at = now
-            return None
-        return self._decide(track, usable, policy, now, final=len(usable) >= 2 * policy.temporal_min_frames)
+        # Decide on this pass. Waiting for a second pass held doorway crossings on "Verifying".
+        return self._decide(track, usable, policy, now, final=True)
 
     def finalize(self, track: Track, policy: Policy) -> Optional[Decision]:
-        """Decision for a track that left the frame before it was confirmed.
+        """Record a face that left the frame before the frame quota was filled.
 
-        An unrecognized face that has not finished both passes is dropped, so a glance is
-        not tallied and does not notify. A registered match is still recorded from whatever
-        usable frames were collected.
+        Someone walking through an entry is often visible for a single sample. That sample
+        is still a detection. Low-quality frames never count.
         """
         if track.emitted:
             return None
         usable = _usable(track, track.last_seen, policy)
         if not usable:
             return None
-        if track.unknown_verified_at is not None:
-            return self._second_unknown_pass(track, usable, policy, track.last_seen, closing=True)
-        label, _person, ratio = _majority(usable)
-        if label == "UNKNOWN" and ratio >= policy.temporal_agreement:
-            return None
         return self._decide(track, usable, policy, track.last_seen, final=True)
-
-    def _second_unknown_pass(self, track: Track, usable: list[Observation], policy: Policy, now: float, closing: bool) -> Optional[Decision]:
-        """Second look at a face the first pass called unrecognized.
-
-        New frames can still match a registered person. Another full agreeing window of
-        unrecognized observations is what records the face. Disagreement keeps collecting
-        until the person leaves.
-        """
-        second = [o for o in usable if track.unknown_verified_at is not None and o.t > track.unknown_verified_at]
-        if _strong_known(usable, policy):
-            last = usable[-1]
-            known = [o for o in second if o.label == "KNOWN" and o.person_id == last.person_id]
-            if known:
-                return self._decide(track, known, policy, now, final=True, observed=len(usable))
-        if len(second) < policy.temporal_min_frames:
-            return None
-        final = closing or len(second) >= 2 * policy.temporal_min_frames
-        return self._decide(track, second, policy, now, final=final, observed=len(usable))
 
     def _decide(
         self,

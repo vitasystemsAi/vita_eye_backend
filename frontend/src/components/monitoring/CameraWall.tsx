@@ -6,6 +6,7 @@ import { BrowserStage, RemotePreview } from '@/components/monitoring/BrowserMoni
 import { cn } from '@/components/ui/cn';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage } from '@/lib/api';
+import { friendlyCameraError } from '@/lib/format';
 import { isCameraBusyError, useMonitor } from '@/lib/monitor';
 import { isLocalCamera, type Camera, type CameraType } from '@/lib/types';
 
@@ -74,7 +75,8 @@ function Picture({ camera }: { camera: Camera }) {
 function NameBar({ camera }: { camera: Camera }) {
   const live = camera.isActive && camera.monitoringEnabled && camera.status !== 'ERROR' && camera.status !== 'OFFLINE';
   const tone = camera.status === 'ERROR' ? 'bg-red-400' : live ? 'bg-emerald-400' : 'bg-ink-400';
-  const detail = camera.status === 'ERROR' && camera.lastError ? camera.lastError : `${TYPE_LABEL[camera.cameraType]} · ${camera.location}`;
+  const problem = camera.status === 'ERROR' && camera.lastError ? friendlyCameraError(camera.lastError) : null;
+  const detail = problem ?? `${TYPE_LABEL[camera.cameraType]} · ${camera.location}`;
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 pt-8 pb-2.5">
       <p className="flex items-center gap-2 text-sm font-medium text-white">

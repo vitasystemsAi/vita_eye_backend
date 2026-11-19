@@ -174,7 +174,7 @@ export async function notifyForEvent(event: DetectionEvent, camera: Camera, unre
     const label = event.eventType === 'UNKNOWN' ? 'Unrecognized person confirmed' : 'Uncertain detection requires review';
     const when = event.eventTimestamp.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
     const title = `${label} — ${camera.cameraName}`;
-    const verified = event.eventType === 'UNKNOWN' ? ' Confirmed after double verification.' : '';
+    const verified = event.eventType === 'UNKNOWN' ? ' Confirmed on sight.' : '';
     const countLine = tally != null ? ` Unrecognized today: ${tally}.` : '';
     const message = `${label} at ${camera.location}${camera.site ? ` (${camera.site})` : ''} on ${when}.${verified}${countLine} Event ID: ${event.id}. Review: ${eventLink(event.id)}`;
     await createAndDispatch(recipients.map((u) => u.id), event.id, channels, title, message);

@@ -89,10 +89,10 @@ function RealtimeAlerts({ toasts = true }: { toasts?: boolean }) {
     notify(
       e.eventType === 'UNKNOWN' ? 'error' : 'warning',
       e.eventType === 'UNKNOWN' ? 'Unrecognized person detected' : 'Uncertain match needs review',
-      e.eventType === 'UNKNOWN' ? `${where}. Confirmed after double verification.${tally}` : `${where}. Verify before taking any action.`,
+      e.eventType === 'UNKNOWN' ? `${where}. Confirmed on sight.${tally}` : `${where}. Verify before taking any action.`,
     );
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-      const body = e.eventType === 'UNKNOWN' ? `${where}. Confirmed after double verification.${tally}` : where;
+      const body = e.eventType === 'UNKNOWN' ? `${where}. Confirmed on sight.${tally}` : where;
       const n = new Notification('VITA EYE alert', { body, tag: e.id, icon: '/icon-192.png' });
       n.onclick = () => router.push(`/events/${e.id}`);
     }

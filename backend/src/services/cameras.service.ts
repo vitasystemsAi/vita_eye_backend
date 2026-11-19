@@ -13,6 +13,7 @@ import {
   LOCAL_TYPES,
   NETWORK_TYPES,
   credentialsAad,
+  publicCameraError,
   resolveStreamUrl,
   setCameraStatus,
   startNetworkStream,
@@ -221,7 +222,7 @@ export async function updateCamera(ctx: AuthContext, id: string, input: CameraIn
   });
   if (NETWORK_TYPES.has(cam.cameraType) && streamAffected) {
     if (!cam.isActive) await stopNetworkStream(cam);
-    else if (cam.monitoringEnabled && isWithinSchedule(cam.schedule)) await startNetworkStream(cam).catch((e) => setCameraStatus(cam, 'ERROR', (e as Error).message.slice(0, 500)));
+    else if (cam.monitoringEnabled && isWithinSchedule(cam.schedule)) await startNetworkStream(cam).catch((e) => setCameraStatus(cam, 'ERROR', publicCameraError(e)));
   }
   if (cam.status === 'DISABLED' && 'isActive' in changes) await setCameraStatus(cam, 'DISABLED');
   return getCamera(ctx, id);
@@ -339,7 +340,7 @@ export async function startMonitoring(ctx: AuthContext, id: string, ip: string |
         await startNetworkStream(cam);
         message = 'Stream ingestion started';
       } catch (err) {
-        await setCameraStatus(cam, 'ERROR', (err as Error).message.slice(0, 500));
+        await setCameraStatus(cam, 'ERROR', publicCameraError(err));
         throw err;
       }
     }

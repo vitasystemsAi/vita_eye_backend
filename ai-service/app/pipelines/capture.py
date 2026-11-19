@@ -471,8 +471,11 @@ def explain_connect_failure(url: str) -> str:
     return f"{host} port {port} is open, but no video frame arrived for {path}."
 
 
-# Tried when the typed path is missing. CP Plus (Dahua) is first: the substream is usually H.264.
+# Tried when the typed path is missing. Newer CP Plus cameras publish the ONVIF path
+# over RTSPS. Older CP Plus (Dahua) cameras use the realmonitor substream.
 VENDOR_RTSP_PATHS = (
+    "/video/live?channel=1&subtype=0&unicast=true&proto=Onvif",
+    "/video/live?channel=1&subtype=1&unicast=true&proto=Onvif",
     "/cam/realmonitor?channel=1&subtype=1",
     "/cam/realmonitor?channel=1&subtype=0",
     "/Streaming/Channels/102",
@@ -510,9 +513,15 @@ def public_stream_url(url: str) -> str:
     return urlunparse((parsed.scheme, netloc, parsed.path, "", parsed.query, ""))
 
 
+def _with_scheme(url: str, scheme: str) -> str:
+    return urlunparse(urlparse(url)._replace(scheme=scheme))
+
+
 def _open_rtsp_transports(url: str):
     """TCP first. Low-delay flags keep the live picture from sitting in FFmpeg's queue."""
     live = "stimeout;5000000|max_delay;0|fflags;nobuffer|flags;low_delay"
+    if urlparse(url).scheme == "rtsps":
+        live = f"tls_verify;0|{live}"
     transports = ("tcp",) if urlparse(url).scheme == "rtsps" else ("tcp", "udp")
     for transport in transports:
         cap = _opencv_capture(url, f"rtsp_transport;{transport}|{live}")
@@ -540,12 +549,17 @@ def _open_rtsp(url: str):
     auth_attempts = 0
     for candidate in rtsp_candidates(url):
         status = _rtsp_status(candidate, host, port)
+        # CP Plus often closes plain RTSP and answers only over TLS on the same port.
+        # Basic auth then returns 401 even with the right password; FFmpeg completes Digest.
+        secured = False
         if status is None and parsed.scheme == "rtsp":
             status = _rtsps_status(candidate, host, port)
+            secured = status is not None
         if status is None:
             if candidate != url:
                 continue
             return _open_rtsp_transports(url)
+        open_url = _with_scheme(candidate, "rtsps") if secured else candidate
         code, _reason = status
         if code == 404:
             path = urlparse(candidate).path or "/"
@@ -553,7 +567,7 @@ def _open_rtsp(url: str):
                 path += "?" + urlparse(candidate).query
             last_other = _rtsp_reply_message(host, path, code, _reason, parsed.username, parsed.scheme == "rtsps")
             continue
-        cap, used, err = _open_rtsp_transports(candidate)
+        cap, used, err = _open_rtsp_transports(open_url)
         if cap is not None:
             if candidate != url:
                 log.info("Using RTSP path %s for %s", urlparse(candidate).path, host)

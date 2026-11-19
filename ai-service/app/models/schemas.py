@@ -22,8 +22,8 @@ class Policy(CamelModel):
     min_face_size: int = Field(48, ge=20, le=1000)
     min_quality: float = Field(0.4, ge=0, le=1)
     min_detection_score: float = Field(0.65, ge=0.3, le=1)
-    temporal_min_frames: int = Field(3, ge=1, le=30)
-    temporal_window_sec: int = Field(10, ge=1, le=120)
+    temporal_min_frames: int = Field(1, ge=1, le=30)
+    temporal_window_sec: int = Field(2, ge=1, le=120)
     temporal_agreement: float = Field(0.7, ge=0.5, le=1)
     unknown_cooldown_sec: int = Field(120, ge=0, le=86400)
     capture_evidence: bool = True

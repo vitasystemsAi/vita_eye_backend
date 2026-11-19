@@ -35,6 +35,15 @@ export const NETWORK_TYPES = new Set(['RTSP', 'ONVIF', 'HTTP_MJPEG', 'LAN', 'LAN
 
 export { credentialsAad };
 
+/** Node's cipher failure. Saved faces that cannot be opened must not be shown as a camera fault. */
+export function publicCameraError(err: unknown): string {
+  const message = err instanceof Error ? err.message : 'The camera could not be started';
+  if (message.includes('unable to authenticate data') || message.includes('Unsupported state')) {
+    return 'A saved face could not be opened. The camera keeps watching. Add that person again in Face Registration for their name to match.';
+  }
+  return message.slice(0, 500);
+}
+
 export async function setCameraStatus(camera: Camera, status: CameraStatus, error: string | null = null) {
   const changed = camera.status !== status || camera.lastError !== error;
   const updates: Partial<Camera> = { status, lastError: error };
@@ -59,7 +68,14 @@ export async function resolveStreamUrl(cameraId: string): Promise<string> {
   if (!cam?.streamReference) throw AppError.badRequest('Camera has no stream URL');
   const nets = urlNetworks(cam.cameraType);
   await assertCameraUrlAllowed(cam.streamReference, cam.cameraType, nets.allowed, nets.blocked);
-  const creds = cam.encryptedCredentials ? JSON.parse(cipher.decryptString(cam.encryptedCredentials, credentialsAad(cam.id))) : null;
+  let creds: { username?: string; password?: string } | null = null;
+  if (cam.encryptedCredentials) {
+    try {
+      creds = JSON.parse(cipher.decryptString(cam.encryptedCredentials, credentialsAad(cam.id))) as { username?: string; password?: string };
+    } catch {
+      throw new AppError(409, 'CAMERA_LOGIN_UNREADABLE', 'The saved camera login cannot be opened. Enter the username and password again.');
+    }
+  }
   return withCredentials(cam.streamReference, creds);
 }
 
@@ -232,7 +248,7 @@ async function reconcileTenantCameras(getRunning: RunningStreams, organizationAc
       try {
         await startNetworkStream(cam);
       } catch (err) {
-        await setCameraStatus(cam, 'ERROR', (err as Error).message.slice(0, 500));
+        await setCameraStatus(cam, 'ERROR', publicCameraError(err));
       }
     } else if (!inSchedule && running.has(cam.id)) {
       await stopNetworkStream(cam);

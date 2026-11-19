@@ -8,7 +8,7 @@ import { Legend, StackedBars } from '@/components/charts';
 import { RequirePermission } from '@/components/RequirePermission';
 import { Button, Card, EmptyState, ErrorBanner, LoadingBlock, PageHeader, StatCard } from '@/components/ui/primitives';
 import { useAuth } from '@/lib/auth';
-import { fmtRelative, fmtTime, humanize, tzOffsetMinutes } from '@/lib/format';
+import { fmtRelative, fmtTime, friendlyCameraError, humanize, tzOffsetMinutes } from '@/lib/format';
 import { useApi, useInterval } from '@/lib/hooks';
 import { useSocketEvent } from '@/lib/socket';
 import type { AuditEntry, DashboardSummary, DashboardTrends, EventSummary } from '@/lib/types';
@@ -58,7 +58,7 @@ function DashboardView() {
           <StatCard label="Registered persons" value={s.registeredPersons} sub={`${s.enrolledPersons} with enrolled face templates`} icon={<Users className="h-5 w-5" />} href="/persons" />
           <StatCard label="Active cameras" value={s.activeCameras} sub={`${s.onlineCameras} online · ${s.offlineCameras} offline · ${s.errorCameras} error`} icon={<Camera className="h-5 w-5" />} tone={s.errorCameras ? 'amber' : 'green'} href="/cameras" />
           <StatCard label="Detections today" value={s.today.total} sub={`${s.today.known} registered · ${s.today.unknown} unrecognized · ${s.today.uncertain} uncertain`} icon={<Activity className="h-5 w-5" />} href="/events" />
-          <StatCard label="Unrecognized today" value={s.today.unknown} sub="Counted after double verification" icon={<ShieldAlert className="h-5 w-5" />} tone={s.today.unknown ? 'red' : 'neutral'} href="/alerts" />
+          <StatCard label="Unrecognized today" value={s.today.unknown} sub="Counted as soon as a clear face is confirmed" icon={<ShieldAlert className="h-5 w-5" />} tone={s.today.unknown ? 'red' : 'neutral'} href="/alerts" />
           <StatCard label="Recognized today" value={s.today.known} sub="Matched registered persons" icon={<UserCheck className="h-5 w-5" />} tone="green" href="/events?type=KNOWN" />
           <StatCard label="Uncertain pending review" value={s.uncertainPendingReview} sub="Below the match threshold" icon={<CircleHelp className="h-5 w-5" />} tone={s.uncertainPendingReview ? 'amber' : 'neutral'} href="/alerts?type=UNCERTAIN" />
           <StatCard label="Unresolved alerts" value={s.unresolvedAlerts} sub="Unrecognized + uncertain, not resolved" icon={<AlertTriangle className="h-5 w-5" />} tone={s.unresolvedAlerts ? 'red' : 'green'} href="/alerts" />
@@ -81,7 +81,7 @@ function DashboardView() {
                   <p className="truncate text-sm font-medium">{c.name}</p>
                   <p className="truncate text-xs text-ink-400" title={c.lastError ?? undefined}>
                     {c.location}
-                    {c.site ? ` · ${c.site}` : ''} · {c.eventsToday} today{c.lastError && c.status === 'ERROR' ? ` · ${c.lastError}` : ''}
+                    {c.site ? ` · ${c.site}` : ''} · {c.eventsToday} today{c.lastError && c.status === 'ERROR' ? ` · ${friendlyCameraError(c.lastError)}` : ''}
                   </p>
                 </div>
                 <CameraStatusBadge status={c.isActive ? c.status : 'DISABLED'} monitoring={c.monitoringEnabled} />

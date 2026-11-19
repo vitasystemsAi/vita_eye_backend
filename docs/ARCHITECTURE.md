@@ -109,9 +109,9 @@ is the majority label if it reaches `temporalAgreement` (default 0.7) — otherw
 confirmed as **UNCERTAIN** and routed to human review. Each track emits at most one event.
 A very strong single-frame match (≥ `knownThreshold + 0.12`) is confirmed immediately, and a
 registered match that leaves the view before the frame quota is finalised from what it collected.
-An unrecognized face needs two separate agreeing passes (double verification) before it is
-stored, added to the daily tally, or notified. The second pass can still match a registered
-person. Leaving before that second pass does not count the face.
+A clear face is confirmed as soon as the frame quota agrees, and a person who leaves the
+frame sooner is still recorded from the samples already seen. That keeps an entry-door
+crossing from sitting on "Verifying" or being dropped. Low-quality frames never count.
 Unknown events are additionally suppressed if the embedding matches a recently reported
 unknown face on the same camera within the cooldown window; known events are suppressed for
 the same person + camera within the cooldown window (enforced in the backend).

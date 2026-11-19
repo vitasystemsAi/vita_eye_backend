@@ -10,7 +10,7 @@ import { Badge, Button, Card, EmptyState, ErrorBanner, Input, LoadingBlock, Moda
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
-import { fmtRelative } from '@/lib/format';
+import { fmtRelative, friendlyCameraError } from '@/lib/format';
 import { useApi, useDebounced } from '@/lib/hooks';
 import { useSocketEvent } from '@/lib/socket';
 import { isLocalCamera, type Camera, type CameraStatus } from '@/lib/types';
@@ -240,7 +240,7 @@ function CamerasView() {
                       {c.streamReference && <p className="max-w-[260px] truncate font-mono text-[11px] text-ink-400" title={c.streamReference}>{c.streamReference}</p>}
                       {c.status === 'ERROR' && c.lastError && (
                         <button type="button" onClick={() => setErrorCamera(c)} className="mt-0.5 block max-w-[260px] truncate text-left text-xs text-red-300 underline decoration-red-400/40 hover:text-red-200" title="View the full error">
-                          {c.lastError}
+                          {friendlyCameraError(c.lastError)}
                         </button>
                       )}
                     </td>
@@ -313,7 +313,7 @@ function CamerasView() {
       >
         {errorCamera && (
           <div className="space-y-3">
-            <p className="whitespace-pre-wrap break-words text-sm text-red-200">{errorCamera.lastError}</p>
+            <p className="whitespace-pre-wrap break-words text-sm text-red-200">{friendlyCameraError(errorCamera.lastError ?? '')}</p>
             {errorCamera.streamReference && <p className="break-all font-mono text-xs text-ink-400">{errorCamera.streamReference}</p>}
           </div>
         )}

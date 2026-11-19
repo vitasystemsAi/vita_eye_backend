@@ -173,8 +173,7 @@ class RecognitionPipeline:
                     events.append(self._event(track, decision, now, policy))
 
                 display, disp_person, disp_sim = track.display_label()
-                # The live box stays on "Verifying" until both unrecognized passes agree.
-                # That is the moment the face is counted and a notification is sent.
+                # The live box stays on "Verifying" only until this track is confirmed.
                 if display == "UNKNOWN" and not track.emitted:
                     display = "PENDING"
                 if display != "KNOWN":
