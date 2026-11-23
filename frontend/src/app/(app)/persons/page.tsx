@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useState } from 'react';
 import { EnrollmentBadge, PersonStatusBadge } from '@/components/badges';
+import { EnrolledFaces } from '@/components/persons/EnrolledFaces';
 import { PersonForm } from '@/components/persons/PersonForm';
 import { RequirePermission } from '@/components/RequirePermission';
 import { Button, Card, ConfirmDialog, EmptyState, ErrorBanner, Input, LoadingBlock, Modal, PageHeader, Pagination, Select, Tabs } from '@/components/ui/primitives';
@@ -120,7 +121,7 @@ function PersonsView() {
       <PageHeader
         title="Face Registration"
         icon={<Users className="h-5 w-5" />}
-        description={tenant ? 'Tenant face enrollment. Open a registration to see the photos that were added.' : 'Registered persons and their enrollment status. Open a registration to see the photos that were added.'}
+        description={tenant ? 'Tenant face enrollment. Each row shows the photos saved for that person.' : 'Registered persons, with the face photos saved for each one.'}
         actions={
           <div className="flex flex-wrap gap-2">
             {can('data:export') && (
@@ -171,6 +172,7 @@ function PersonsView() {
             <table className="w-full">
               <thead className="border-b border-ink-700/70">
                 <tr>
+                  <th className="table-head">Face</th>
                   <th className="table-head">Name</th>
                   <th className="table-head">{tenant ? 'Mobile number' : 'Reference ID'}</th>
                   <th className="table-head">{tenant ? 'Room number' : 'Department'}</th>
@@ -184,6 +186,9 @@ function PersonsView() {
               <tbody className="divide-y divide-ink-800">
                 {data?.map((p) => (
                   <tr key={p.id} className="hover:bg-ink-800/40">
+                    <td className="table-cell py-2">
+                      <EnrolledFaces personId={p.id} templates={p.faces ?? []} layout="row" />
+                    </td>
                     <td className="table-cell">
                       <Link href={`/persons/${p.id}`} className="font-medium text-brand-300 hover:text-brand-200">
                         {p.personName}

@@ -74,21 +74,32 @@ export async function listPersons(
   }
   const { rows, count } = await RegisteredPerson.findAndCountAll({
     where: where as WhereOptions<RegisteredPerson>,
-    include: [{ model: User, as: 'enroller', attributes: ['id', 'name'] }],
+    include: [
+      { model: User, as: 'enroller', attributes: ['id', 'name'] },
+      {
+        model: FaceTemplate,
+        as: 'templates',
+        attributes: ['id', 'registeredPersonId', 'previewReference', 'qualityScore', 'createdAt'],
+        separate: true,
+        order: [['createdAt', 'ASC']],
+      },
+    ],
     order: [[q.sort, q.order]],
     limit: q.pageSize,
     offset: (q.page - 1) * q.pageSize,
   });
-  const counts = rows.length
-    ? ((await FaceTemplate.findAll({
-        attributes: ['registeredPersonId', [sequelize.fn('COUNT', sequelize.col('id')), 'n']],
-        where: { registeredPersonId: rows.map((r) => r.id) },
-        group: ['registeredPersonId'],
-        raw: true,
-      })) as unknown as Array<{ registeredPersonId: string; n: number }>)
-    : [];
-  const byId = new Map(counts.map((c) => [c.registeredPersonId, Number(c.n)]));
-  return { items: rows.map((r) => present(r, byId.get(r.id) ?? 0)), meta: pageMeta(q.page, q.pageSize, count) };
+  return {
+    items: rows.map((r) => ({
+      ...present(r, r.templates?.length ?? 0),
+      faces: (r.templates ?? []).map((t) => ({
+        id: t.id,
+        qualityScore: t.qualityScore,
+        createdAt: t.createdAt,
+        hasPhoto: Boolean(t.previewReference),
+      })),
+    })),
+    meta: pageMeta(q.page, q.pageSize, count),
+  };
 }
 
 async function findPerson(ctx: AuthContext, id: string) {

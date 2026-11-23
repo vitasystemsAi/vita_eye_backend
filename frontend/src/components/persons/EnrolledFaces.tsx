@@ -1,19 +1,33 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { refreshSession } from '@/lib/api';
 import { fmtDateTime, fmtPercent } from '@/lib/format';
-import type { PersonDetail } from '@/lib/types';
 
-type Template = PersonDetail['templates'][number];
+type Template = { id: string; qualityScore: number | null; createdAt: string; hasPhoto?: boolean };
+
+async function fetchFace(personId: string, templateId: string) {
+  const path = `/api/v1/persons/${personId}/faces/${templateId}`;
+  const load = () => fetch(path, { credentials: 'same-origin', cache: 'no-store' });
+  let res = await load();
+  if (res.status === 401 && (await refreshSession())) res = await load();
+  if (!res.ok) return null;
+  const type = res.headers.get('content-type') ?? '';
+  if (!type.startsWith('image/')) return null;
+  return URL.createObjectURL(await res.blob());
+}
 
 export function EnrolledFaces({
   personId,
   templates,
   highlightId,
+  layout = 'grid',
 }: {
   personId: string;
   templates: Template[];
   highlightId?: string | null;
+  /** `row` is the small strip used on the registration list. */
+  layout?: 'grid' | 'row';
 }) {
   const [urls, setUrls] = useState<Record<string, string>>({});
   const [ready, setReady] = useState(false);
@@ -33,9 +47,8 @@ export function EnrolledFaces({
       const next: Record<string, string> = {};
       for (const template of withPhoto) {
         try {
-          const res = await fetch(`/api/v1/persons/${personId}/faces/${template.id}`, { credentials: 'same-origin', cache: 'no-store' });
-          if (!res.ok) continue;
-          const url = URL.createObjectURL(await res.blob());
+          const url = await fetchFace(personId, template.id);
+          if (!url) continue;
           if (!alive) {
             URL.revokeObjectURL(url);
             continue;
@@ -61,7 +74,28 @@ export function EnrolledFaces({
   }, [personId, key]);
 
   if (!templates.length) {
-    return <p className="text-sm text-ink-400">No faces enrolled yet.</p>;
+    return layout === 'row' ? <span className="text-xs text-ink-500">—</span> : <p className="text-sm text-ink-400">No faces enrolled yet.</p>;
+  }
+
+  if (layout === 'row') {
+    return (
+      <ul className="flex max-w-[220px] flex-wrap gap-1">
+        {templates.map((template, index) => {
+          const src = urls[template.id];
+          return (
+            <li key={template.id} className="h-12 w-10 overflow-hidden rounded-md border border-ink-700 bg-ink-900" title={template.hasPhoto ? `Face ${index + 1}` : 'No photo stored'}>
+              {src ? (
+                <img src={src} alt={`Enrolled face ${index + 1}`} className="h-full w-full object-cover" />
+              ) : (
+                <div className="flex h-full items-center justify-center px-0.5 text-center text-[9px] leading-tight text-ink-500">
+                  {template.hasPhoto && !ready ? '…' : '—'}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    );
   }
 
   return (

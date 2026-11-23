@@ -158,6 +158,8 @@ export interface Person {
   deleteAvailableAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Enrollment shots returned with the registration list. */
+  faces?: Array<{ id: string; qualityScore: number | null; createdAt: string; hasPhoto?: boolean }>;
 }
 
 export interface PersonDetail extends Person {
