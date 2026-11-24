@@ -60,6 +60,16 @@ export const testDraftSchema = z.object({
   clearCredentials: z.boolean().optional(),
 });
 
+export const previewProbeSchema = testDraftSchema.extend({
+  path: z
+    .string()
+    .trim()
+    .max(200)
+    .refine((value) => value.startsWith('/') && !value.startsWith('//') && !value.includes('@') && !value.includes('\\') && !value.includes('://'), 'Path must start with /')
+    .optional(),
+  secure: z.boolean().optional(),
+});
+
 export const previewSessionSchema = z.object({
   sessionId: z.string().regex(/^[A-Za-z0-9_-]{16,80}$/),
 });

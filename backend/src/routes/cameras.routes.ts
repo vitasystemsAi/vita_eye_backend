@@ -9,6 +9,7 @@ r.use(authenticate);
 r.get('/', requirePermission('cameras:view'), c.list);
 r.post('/', requirePermission('cameras:manage'), c.create);
 r.post('/test-connection', sensitiveLimiter, requirePermission('cameras:manage'), c.testDraft);
+r.post('/preview/probe', sensitiveLimiter, requirePermission('cameras:manage'), c.previewProbe);
 r.post('/preview/start', sensitiveLimiter, requirePermission('cameras:manage'), c.previewStart);
 r.get('/preview/:sessionId', requirePermission('cameras:manage'), c.previewRead);
 r.post('/preview/:sessionId/stop', requirePermission('cameras:manage'), c.previewEnd);

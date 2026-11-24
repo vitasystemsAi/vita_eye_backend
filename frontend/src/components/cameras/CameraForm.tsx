@@ -86,12 +86,6 @@ async function discoverFromThisComputer(): Promise<LanDiscover> {
   return data;
 }
 
-function cameraWebUrl(host: string): string | null {
-  const ip = host.trim();
-  if (!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip) || ip.split('.').some((part) => Number(part) > 255)) return null;
-  return `http://${ip}`;
-}
-
 function lanStreamUrl(protocol: LanProtocol, host: string, port: string, path: string): string {
   const defaults = LAN_DEFAULTS[protocol];
   const scheme = protocol === 'http' ? 'http' : protocol === 'rtsps' ? 'rtsps' : 'rtsp';
@@ -174,11 +168,13 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
   const [selectedIps, setSelectedIps] = useState<string[]>([]);
   const [lanNotice, setLanNotice] = useState<string | null>(null);
   const [findingLan, setFindingLan] = useState(false);
-  const [previewBusy, setPreviewBusy] = useState<'auto' | 'manual' | null>(null);
-  const [previewNote, setPreviewNote] = useState<string | null>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewSteps, setPreviewSteps] = useState<Array<{ title: string; detail: string; state: 'run' | 'ok' | 'fail' | 'pause' }>>([]);
+  const [checkpoint, setCheckpoint] = useState<{ message: string; nextPath: string | null } | null>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewOn, setPreviewOn] = useState(false);
   const previewSession = useRef<string | null>(null);
+  const previewBase = useRef('');
   const previewWatch = useRef(0);
   const {
     register,
@@ -220,8 +216,6 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
   const directUrl = type === 'RTSP' || type === 'ONVIF' || type === 'HTTP_MJPEG';
   const usbDeviceId = useWatch({ control, name: 'usbDeviceId' });
   const lanPortUrl = useWatch({ control, name: 'lanPortUrl' });
-  const lanHost = useWatch({ control, name: 'lanHost' }) ?? '';
-  const cameraPage = cameraWebUrl(lanHost);
   useEffect(() => {
     if (!camera && type === 'LAN_PORT' && !getValues('cameraName').trim()) setValue('cameraName', 'CP Plus');
   }, [camera, type, getValues, setValue]);
@@ -348,7 +342,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
     return streamUrl;
   }
 
-  function previewBody(streamUrl: string) {
+  function previewBody(streamUrl: string, path?: string, secure?: boolean) {
     const v = getValues();
     return {
       cameraId: camera?.id,
@@ -357,6 +351,8 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
       username: v.username || undefined,
       password: v.password || undefined,
       clearCredentials: v.clearCredentials || undefined,
+      path,
+      secure: secure || undefined,
     };
   }
 
@@ -379,70 +375,106 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
         if (previewSession.current === sessionId) {
           previewSession.current = null;
           void api.post(`/cameras/preview/${sessionId}/stop`, {}).catch(() => undefined);
-          setPreviewNote('The camera closed the picture.');
-          setPreviewOn(false);
+          setPreviewSteps((current) => [...current, { title: 'Preview stopped', detail: 'The camera closed the picture.', state: 'fail' }]);
         }
         return;
       }
     }
   }
 
-  async function openPicture(streamUrl: string) {
+  async function openPicture(streamUrl: string, path: string | undefined, secure: boolean) {
     const { data } = await api.post<{ ok: boolean; error?: string; sessionId?: string; frame?: string; publicUrl?: string }>(
       '/cameras/preview/start',
-      previewBody(streamUrl),
+      previewBody(streamUrl, path, secure),
       { signal: AbortSignal.timeout(25000) },
     );
     if (!data.ok || !data.sessionId || !data.frame) {
-      setPreviewNote(data.error || 'The picture did not open.');
-      return;
+      setPreviewSteps((current) => {
+        const next = current.slice();
+        const last = next[next.length - 1];
+        if (last) next[next.length - 1] = { ...last, state: 'fail', detail: data.error || 'The picture did not open.' };
+        return next;
+      });
+      return false;
     }
     if (data.publicUrl) applyOpenedUrl(data.publicUrl);
     releasePreview();
     previewSession.current = data.sessionId;
     setPreviewOn(true);
     setPreviewSrc(`data:image/jpeg;base64,${data.frame}`);
-    setPreviewNote('Live picture is on.');
+    setPreviewSteps((current) => {
+      const next = current.slice();
+      const last = next[next.length - 1];
+      if (last) next[next.length - 1] = { ...last, state: 'ok', detail: 'Picture is live. This path will be saved.' };
+      return next;
+    });
     void watchPreview(data.sessionId);
+    return true;
   }
 
-  async function showLivePicture(mode: 'auto' | 'manual') {
-    const v = getValues();
-    const page = v.cameraType === 'LAN' ? cameraWebUrl(v.lanHost) : null;
-    if (page) window.open(page, '_blank', 'noopener');
-    if (mode === 'manual') {
-      setPreviewNote(page ? 'Camera page opened in a browser tab. Sign in there with the username and password.' : 'Sign in with the username and password.');
-      if (!v.username.trim()) return;
+  async function runPreviewStep(streamUrl: string, path?: string) {
+    setPreviewSteps((current) => [...current, { title: path || 'Typed address', detail: 'Opening this path with the username and password…', state: 'run' }]);
+    setCheckpoint(null);
+    const { data } = await api.post<{ decision: 'open' | 'pause' | 'stop'; message: string; path: string; encrypted: boolean; nextPath: string | null }>(
+      '/cameras/preview/probe',
+      previewBody(streamUrl, path),
+      { signal: AbortSignal.timeout(25000) },
+    );
+    setPreviewSteps((current) => {
+      const next = current.slice();
+      const last = next[next.length - 1];
+      if (last) {
+        next[next.length - 1] = {
+          title: data.path || last.title,
+          detail: data.message,
+          state: data.decision === 'open' ? 'ok' : data.decision === 'pause' ? 'pause' : 'fail',
+        };
+      }
+      return next;
+    });
+    if (data.decision === 'open') {
+      const opened = await openPicture(streamUrl, data.path, data.encrypted);
+      if (!opened && data.nextPath) setCheckpoint({ message: 'No picture on this path.', nextPath: data.nextPath });
+      return;
     }
+    if (data.decision === 'pause') setCheckpoint({ message: data.message, nextPath: data.nextPath });
+  }
+
+  async function startLivePreview() {
     const streamUrl = await streamFromForm();
     if (!streamUrl) return;
     releasePreview();
     setPreviewSrc(null);
-    setPreviewBusy(mode);
-    if (mode === 'auto') setPreviewNote('Signing in and opening the picture…');
+    setCheckpoint(null);
+    setPreviewSteps([]);
+    previewBase.current = streamUrl;
+    setPreviewBusy(true);
     try {
-      let target = streamUrl;
-      if (mode === 'auto') {
-        const { data } = await api.post<{ ok: boolean; error?: string; message?: string; streamUrl?: string }>(
-          '/cameras/test-connection',
-          previewBody(streamUrl),
-          { signal: AbortSignal.timeout(50000) },
-        );
-        if (!data.ok) {
-          setPreviewNote(data.error || data.message || 'The camera did not open.');
-          return;
-        }
-        if (data.streamUrl) {
-          applyOpenedUrl(data.streamUrl);
-          target = data.streamUrl;
-        }
-      }
-      await openPicture(target);
+      await runPreviewStep(streamUrl);
     } catch (err) {
-      setPreviewNote(previewFailure(err));
+      setPreviewSteps([{ title: 'Could not open', detail: previewFailure(err), state: 'fail' }]);
     } finally {
-      setPreviewBusy(null);
+      setPreviewBusy(false);
     }
+  }
+
+  async function proceedPreview() {
+    const path = checkpoint?.nextPath;
+    if (!path || !previewBase.current) return;
+    setPreviewBusy(true);
+    try {
+      await runPreviewStep(previewBase.current, path);
+    } catch (err) {
+      setPreviewSteps((current) => [...current, { title: path, detail: previewFailure(err), state: 'fail' }]);
+    } finally {
+      setPreviewBusy(false);
+    }
+  }
+
+  function interruptPreview() {
+    releasePreview();
+    setCheckpoint(null);
+    setPreviewSteps((current) => [...current, { title: 'Interrupted', detail: 'Stopped. Change the path or the password, then run the preview again.', state: 'pause' }]);
   }
 
   async function submit(v: FormValues) {
@@ -596,21 +628,55 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
 
       {type === 'LAN' && (
         <div className="space-y-4 rounded-xl border border-ink-700 bg-ink-850/60 p-4">
-          <p className="text-xs text-ink-400">Enter the camera IP. Its page opens here and in a browser tab. Sign in with the username and password from that page.</p>
-          <Field label="Camera IP" error={errors.lanHost?.message} hint={camera?.streamReference ? `Current: ${camera.streamReference}` : 'Example: 192.168.1.64'}>
-            <Input {...register('lanHost')} className="font-mono" placeholder="192.168.1.64" autoComplete="off" />
-          </Field>
-          {cameraPage && (
-            <div className="space-y-2">
-              <a href={cameraPage} target="_blank" rel="noreferrer" className="text-sm text-brand-300 underline">
-                Open {cameraPage} in the browser
-              </a>
-              <iframe title="Camera page" src={cameraPage} className="aspect-video w-full rounded-lg border border-ink-700 bg-black" />
-              <p className="text-xs text-ink-400">If this box stays blank, use the link above. Some cameras only open in their own browser tab.</p>
-            </div>
-          )}
+          <p className="text-xs text-ink-400">
+            The camera’s Ethernet cable goes to your LAN. Enter the IP from the camera website. CP Plus cameras use the same username and password as that website. Live preview opens that address with the login and pauses when a path fails, so you can try the next one or type it yourself.
+          </p>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Field label="Username" error={errors.username?.message} hint={camera?.hasCredentials ? 'Stored encrypted — leave blank to keep' : 'Same login as the camera page'}>
+            <Field label="Camera brand" hint="CP Plus fills the stream path those cameras publish.">
+              <Select
+                defaultValue=""
+                onChange={(event) => {
+                  if (event.target.value !== 'cpplus') return;
+                  setValue('lanProtocol', 'rtsp');
+                  setValue('lanPort', '554');
+                  setValue('lanPath', '/cam/realmonitor?channel=1&subtype=1');
+                }}
+              >
+                <option value="">General</option>
+                <option value="cpplus">CP Plus</option>
+              </Select>
+            </Field>
+            <Field label="Protocol" error={errors.lanProtocol?.message} hint="RTSP on port 554 is the usual LAN camera. HTTP is for an MJPEG page.">
+              <Select
+                {...lanProtocolField}
+                onChange={(event) => {
+                  const next = event.target.value as LanProtocol;
+                  const prev = getValues('lanProtocol');
+                  const prevDefaults = LAN_DEFAULTS[prev];
+                  const nextDefaults = LAN_DEFAULTS[next];
+                  if (!getValues('lanPort') || getValues('lanPort') === prevDefaults.port) setValue('lanPort', nextDefaults.port);
+                  if (!getValues('lanPath') || getValues('lanPath') === prevDefaults.path) setValue('lanPath', nextDefaults.path);
+                  void lanProtocolField.onChange(event);
+                }}
+              >
+                <option value="rtsp">RTSP</option>
+                <option value="rtsps">RTSPS (encrypted)</option>
+                <option value="onvif">ONVIF (RTSP profile)</option>
+                <option value="http">HTTP MJPEG</option>
+              </Select>
+            </Field>
+            <Field label="Camera IP" error={errors.lanHost?.message} hint={camera?.streamReference ? `Current: ${camera.streamReference}` : 'Use the address the client gave you. If this server is somewhere else, add the camera anyway. The site connector on the client’s PC opens it.'}>
+              <Input {...register('lanHost')} className="font-mono" placeholder="192.168.1.64" autoComplete="off" />
+            </Field>
+            <Field label="Port" error={errors.lanPort?.message}>
+              <Input {...register('lanPort')} className="font-mono" inputMode="numeric" placeholder="554" />
+            </Field>
+            <Field label="Stream path" error={errors.lanPath?.message} hint="CP Plus: /cam/realmonitor?channel=1&subtype=1. Others: /stream1 or /Streaming/Channels/101">
+              <Input {...register('lanPath')} className="font-mono" placeholder="/stream1" autoComplete="off" />
+            </Field>
+          </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Field label="Username" error={errors.username?.message} hint={camera?.hasCredentials ? 'Stored encrypted — leave blank to keep' : 'Stored encrypted (AES-256-GCM)'}>
               <Input {...register('username')} autoComplete="off" />
             </Field>
             <Field label="Password" error={errors.password?.message}>
@@ -622,70 +688,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
               <input type="checkbox" className="h-4 w-4 accent-blue-600" {...register('clearCredentials')} /> Remove stored credentials
             </label>
           )}
-          <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" loading={previewBusy === 'auto'} disabled={previewBusy !== null} onClick={() => void showLivePicture('auto')}>
-              Automatic
-            </Button>
-            <Button variant="secondary" loading={previewBusy === 'manual'} disabled={previewBusy !== null} onClick={() => void showLivePicture('manual')}>
-              Manual
-            </Button>
-          </div>
-          <p className="text-xs text-ink-400">Automatic signs in and finds the picture. Manual opens the camera page so you can sign in yourself. Both show the live picture when the login works.</p>
-          <details className="text-sm text-ink-300">
-            <summary className="cursor-pointer text-xs text-ink-400">Stream details</summary>
-            <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
-              <Field label="Camera brand" hint="CP Plus fills the stream path those cameras publish.">
-                <Select
-                  defaultValue=""
-                  onChange={(event) => {
-                    if (event.target.value !== 'cpplus') return;
-                    setValue('lanProtocol', 'rtsp');
-                    setValue('lanPort', '554');
-                    setValue('lanPath', '/cam/realmonitor?channel=1&subtype=1');
-                  }}
-                >
-                  <option value="">General</option>
-                  <option value="cpplus">CP Plus</option>
-                </Select>
-              </Field>
-              <Field label="Protocol" error={errors.lanProtocol?.message}>
-                <Select
-                  {...lanProtocolField}
-                  onChange={(event) => {
-                    const next = event.target.value as LanProtocol;
-                    const prev = getValues('lanProtocol');
-                    const prevDefaults = LAN_DEFAULTS[prev];
-                    const nextDefaults = LAN_DEFAULTS[next];
-                    if (!getValues('lanPort') || getValues('lanPort') === prevDefaults.port) setValue('lanPort', nextDefaults.port);
-                    if (!getValues('lanPath') || getValues('lanPath') === prevDefaults.path) setValue('lanPath', nextDefaults.path);
-                    void lanProtocolField.onChange(event);
-                  }}
-                >
-                  <option value="rtsp">RTSP</option>
-                  <option value="rtsps">RTSPS (encrypted)</option>
-                  <option value="onvif">ONVIF (RTSP profile)</option>
-                  <option value="http">HTTP MJPEG</option>
-                </Select>
-              </Field>
-              <Field label="Port" error={errors.lanPort?.message}>
-                <Input {...register('lanPort')} className="font-mono" inputMode="numeric" placeholder="554" />
-              </Field>
-              <Field label="Stream path" error={errors.lanPath?.message}>
-                <Input {...register('lanPath')} className="font-mono" placeholder="/stream1" autoComplete="off" />
-              </Field>
-            </div>
-          </details>
-          {(previewSrc || previewNote) && (
-            <div className="space-y-2">
-              {previewSrc && <img src={previewSrc} alt="Live preview from the camera" className="aspect-video w-full rounded-lg border border-ink-700 bg-black object-contain" />}
-              {previewNote && <p className="text-sm text-ink-200">{previewNote}</p>}
-              {previewOn && (
-                <Button variant="secondary" onClick={releasePreview}>
-                  Stop preview
-                </Button>
-              )}
-            </div>
-          )}
+          <p className="text-xs text-ink-400">Credentials are never returned to the browser and are only sent to the internal recognition service.</p>
         </div>
       )}
 
@@ -817,10 +820,42 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
       </div>
 
       {errors.root && <p className="text-sm text-red-300">{errors.root.message}</p>}
-      {(type === 'LAN_PORT' || directUrl) && (previewSrc || previewNote) && (
-        <div className="space-y-2 rounded-xl border border-ink-700 bg-ink-850/60 p-4">
-          {previewSrc && <img src={previewSrc} alt="Live preview from the camera" className="aspect-video w-full rounded-lg bg-black object-contain" />}
-          {previewNote && <p className="text-sm text-ink-200">{previewNote}</p>}
+      {(type === 'LAN' || type === 'LAN_PORT' || directUrl) && (previewSteps.length > 0 || previewSrc) && (
+        <div className="space-y-3 rounded-xl border border-ink-700 bg-ink-850/60 p-4">
+          <div className="overflow-hidden rounded-lg border border-ink-700 bg-black">
+            {previewSrc ? (
+              <img src={previewSrc} alt="Live preview from the camera" className="aspect-video w-full object-contain" />
+            ) : (
+              <p className="px-3 py-8 text-center text-xs text-ink-400">The picture appears here when a path accepts the username and password.</p>
+            )}
+          </div>
+          <ol className="space-y-2">
+            {previewSteps.map((step, index) => (
+              <li key={`${step.title}-${index}`} className="text-sm">
+                <span className={step.state === 'ok' ? 'text-emerald-200' : step.state === 'fail' ? 'text-red-200' : step.state === 'pause' ? 'text-amber-200' : 'text-ink-100'}>
+                  {index + 1}. {step.title}
+                </span>
+                <span className="mt-0.5 block text-xs text-ink-400">{step.detail}</span>
+              </li>
+            ))}
+          </ol>
+          {checkpoint && (
+            <div className="space-y-3 rounded-lg bg-amber-500/10 px-3 py-3">
+              <p className="text-sm text-amber-100">Checkpoint. {checkpoint.message}</p>
+              {checkpoint.nextPath && <p className="break-all font-mono text-xs text-ink-300">Next path: {checkpoint.nextPath}</p>}
+              <div className="flex flex-wrap gap-2">
+                {checkpoint.nextPath && (
+                  <Button variant="secondary" disabled={previewBusy} onClick={() => void proceedPreview()}>
+                    Proceed
+                  </Button>
+                )}
+                <Button variant="secondary" disabled={previewBusy} onClick={interruptPreview}>
+                  Interrupt
+                </Button>
+              </div>
+              <p className="text-xs text-ink-400">Proceed tries the next path. Interrupt stops here so you can change the path or password and run the preview again.</p>
+            </div>
+          )}
           {previewOn && (
             <Button variant="secondary" onClick={releasePreview}>
               Stop preview
@@ -829,8 +864,8 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
         </div>
       )}
       <div className="flex items-center justify-end gap-2">
-        {(type === 'LAN_PORT' || directUrl) && (
-          <Button variant="secondary" className="mr-auto" icon={<Video className="h-4 w-4" />} loading={previewBusy === 'auto'} onClick={() => void showLivePicture('auto')}>
+        {(type === 'LAN' || type === 'LAN_PORT' || directUrl) && (
+          <Button variant="secondary" className="mr-auto" icon={<Video className="h-4 w-4" />} loading={previewBusy} onClick={() => void startLivePreview()}>
             Live preview
           </Button>
         )}
