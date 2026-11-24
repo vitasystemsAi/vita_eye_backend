@@ -1,6 +1,6 @@
 /** Last JPEG sent for a camera, so a viewer who just signed in does not wait for the next capture. */
 const latest = new Map<string, { payload: unknown; at: number }>();
-const MAX_AGE_MS = 15_000;
+const MAX_AGE_MS = 2_000;
 
 export function rememberPreview(cameraId: string, payload: unknown) {
   latest.set(cameraId, { payload, at: Date.now() });

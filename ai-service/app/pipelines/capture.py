@@ -519,7 +519,8 @@ def _with_scheme(url: str, scheme: str) -> str:
 
 def _open_rtsp_transports(url: str):
     """TCP first. Low-delay flags keep the live picture from sitting in FFmpeg's queue."""
-    live = "stimeout;5000000|max_delay;0|fflags;nobuffer|flags;low_delay"
+    # analyzeduration and the reorder queue are what make an RTSP preview sit a few seconds behind.
+    live = "stimeout;5000000|max_delay;0|reorder_queue_size;0|analyzeduration;0|probesize;32768|fflags;nobuffer|flags;low_delay|flush_packets;1"
     if urlparse(url).scheme == "rtsps":
         live = f"tls_verify;0|{live}"
     transports = ("tcp",) if urlparse(url).scheme == "rtsps" else ("tcp", "udp")

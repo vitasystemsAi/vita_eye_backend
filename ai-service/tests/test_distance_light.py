@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from app.services.face_engine import _compensate_light, _detection_view, _merge_faces, _prune_faces
+from app.services.face_engine import _compensate_light, _detection_view, _looks_like_face, _merge_faces, _prune_faces
 from app.services.face_engine import DetectedFace
 from app.services.quality import QualityReport
 
@@ -57,6 +57,17 @@ def test_nested_ear_box_is_pruned_from_face():
     pruned = _prune_faces([DetectedFace(face), DetectedFace(ear)])
     assert len(pruned) == 1
     assert pruned[0].bbox[2] == 120
+
+
+def test_landmarks_in_a_face_arrangement_are_kept():
+    # Box 80x100, eyes level, nose below them, mouth below the nose.
+    row = np.array([100, 80, 80, 100, 122, 115, 162, 118, 142, 145, 128, 172, 158, 174, 0.9], dtype=np.float32)
+    assert _looks_like_face(row) is True
+
+
+def test_object_box_without_a_face_arrangement_is_dropped():
+    wide = np.array([0, 0, 240, 50, 20, 20, 80, 22, 50, 10, 30, 8, 70, 9, 0.8], dtype=np.float32)
+    assert _looks_like_face(wide) is False
 
 
 def test_extreme_profile_is_not_matched():

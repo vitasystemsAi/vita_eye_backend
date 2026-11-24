@@ -23,11 +23,14 @@ from app.services.backend_client import BackendClient
 log = logging.getLogger("vita.stream")
 
 # Keep FFmpeg from waiting indefinitely on unreachable RTSP sources.
-os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000")
+os.environ.setdefault(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    "rtsp_transport;tcp|stimeout;5000000|max_delay;0|reorder_queue_size;0|analyzeduration;0|probesize;32768|fflags;nobuffer|flags;low_delay|flush_packets;1",
+)
 MAX_BACKOFF_SEC = 60
 HEARTBEAT_SEC = 20
 GALLERY_POLL_SEC = 60
-PREVIEW_MAX_EDGE = 960
+PREVIEW_MAX_EDGE = 720
 PREVIEW_INTERVAL_SEC = 0.08
 PREVIEW_PROBE_SEC = 1.0
 
@@ -46,7 +49,7 @@ def preview_jpeg(frame, faces: list[dict]) -> Optional[tuple[bytes, list[int], l
     image = frame
     if scale < 1:
         image = cv2.resize(frame, (max(1, round(width * scale)), max(1, round(height * scale))), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 58])
+    ok, buf = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 46])
     if not ok:
         return None
     scaled: list[dict] = []

@@ -93,7 +93,7 @@ class FaceEngine:
             if scale > 1.08:
                 found = _merge_faces(found, self._detect_scaled(prepared, scale, DISTANCE_DETECT_SIDE))
         # Drop nested/ear-sized duplicates so one person does not get two live tracks.
-        return _prune_faces(found)
+        return _prune_faces([face for face in found if _looks_like_face(face.row)])
 
     def _detect_scaled(self, img: np.ndarray, scale: float, max_side: int) -> list[DetectedFace]:
         detector, _ = self._models()
@@ -231,6 +231,35 @@ def _merge_faces(primary: list[DetectedFace], extra: list[DetectedFace]) -> list
         if not replaced:
             merged.append(face)
     return merged
+
+
+def _looks_like_face(row: np.ndarray) -> bool:
+    """YuNet also fires on posters and furniture. Keep a box only when the five landmarks sit like a face."""
+    x, y, width, height = (float(value) for value in row[:4])
+    if width < 12 or height < 12:
+        return False
+    ratio = width / height
+    if ratio < 0.5 or ratio > 1.65:
+        return False
+    right_eye, left_eye = row[4:6], row[6:8]
+    nose, right_mouth, left_mouth = row[8:10], row[10:12], row[12:14]
+    eye_dist = float(np.linalg.norm(left_eye - right_eye))
+    if eye_dist < max(6.0, 0.16 * width):
+        return False
+    if abs(float(left_eye[1] - right_eye[1])) > 0.55 * eye_dist:
+        return False
+    eye_y = float(right_eye[1] + left_eye[1]) / 2.0
+    if float(nose[1]) < eye_y:
+        return False
+    mouth_y = float(right_mouth[1] + left_mouth[1]) / 2.0
+    if mouth_y < float(nose[1]):
+        return False
+    pad_x, pad_y = 0.35 * width, 0.35 * height
+    for point in (right_eye, left_eye, nose, right_mouth, left_mouth):
+        px, py = float(point[0]), float(point[1])
+        if not (x - pad_x <= px <= x + width + pad_x and y - pad_y <= py <= y + height + pad_y):
+            return False
+    return True
 
 
 def _prune_faces(faces: list[DetectedFace]) -> list[DetectedFace]:
