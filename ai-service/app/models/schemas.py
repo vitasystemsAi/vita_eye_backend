@@ -100,11 +100,6 @@ class StreamTest(CamelModel):
     url: str
 
 
-class StreamProbe(CamelModel):
-    url: str
-    path: Optional[str] = None
-
-
 class PreviewStop(CamelModel):
     session_id: str
 

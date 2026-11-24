@@ -154,23 +154,6 @@ export function testStream(url: string) {
   return call<{ ok: boolean; width?: number; height?: number; error?: string }>('/v1/streams/test', { ...json({ url }), timeoutMs: 45000 });
 }
 
-export type ProbeDecision = 'open' | 'pause' | 'stop';
-
-export interface ProbeCheckpoint {
-  decision: ProbeDecision;
-  message: string;
-  path: string;
-  publicUrl: string;
-  code: number | null;
-  encrypted: boolean;
-  nextPath: string | null;
-}
-
-/** One path only. The caller decides whether to try the next path. */
-export function probeStream(url: string, path?: string) {
-  return call<ProbeCheckpoint>('/v1/streams/probe', { ...json({ url, path }), timeoutMs: 20000 });
-}
-
 export interface PreviewFrame {
   ok: true;
   sessionId: string;

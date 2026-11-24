@@ -9,7 +9,6 @@ import cv2
 import numpy as np
 
 from app.pipelines.capture import open_working_capture, rtsp_candidates, stream_candidates
-from app.pipelines.preview import checkpoint_decision, next_candidate_path
 
 JPEG = cv2.imencode(".jpg", np.full((48, 64, 3), 40, dtype=np.uint8))[1].tobytes()
 
@@ -76,19 +75,6 @@ def test_cp_plus_path_is_tried_when_the_typed_path_is_generic():
     assert found[0].endswith("/stream1")
     assert any(item.endswith("/cam/realmonitor?channel=1&subtype=1") and "secret" in item for item in found)
     assert all("192.168.1.64" in item for item in found)
-
-
-def test_checkpoint_waits_before_the_next_path():
-    url = "rtsp://user:secret@192.168.1.64:554/stream1"
-    nxt = next_candidate_path(url, "/stream1")
-    assert nxt is not None
-    assert nxt.startswith("/")
-    assert "secret" not in nxt
-    assert next_candidate_path(url, "/not-a-known-path") is None
-    assert checkpoint_decision(True, False, True) == "open"
-    assert checkpoint_decision(False, False, True) == "pause"
-    assert checkpoint_decision(False, True, False) == "pause"
-    assert checkpoint_decision(False, False, False) == "stop"
 
 
 def test_offline_host_fails_without_trying_every_path():

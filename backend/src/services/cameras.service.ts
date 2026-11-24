@@ -7,7 +7,7 @@ import { AppError } from '../utils/errors';
 import { pageMeta } from '../utils/http';
 import { assertCameraUrlAllowed, computerIpv4, describeCameraReachability, withCredentials } from '../utils/network';
 import { isWithinSchedule } from '../utils/schedule';
-import { previewFrame, probeStream, startPreview, stopPreview, testStream, type ProbeCheckpoint } from './ai.client';
+import { previewFrame, startPreview, stopPreview, testStream } from './ai.client';
 import { audit } from './audit.service';
 import {
   LOCAL_TYPES,
@@ -289,20 +289,6 @@ interface DraftInput {
   username?: string | null;
   password?: string | null;
   clearCredentials?: boolean;
-  path?: string;
-  secure?: boolean;
-}
-
-function applyStreamPath(streamUrl: string, path?: string): string {
-  if (!path) return streamUrl;
-  const url = new URL(streamUrl);
-  const host = url.hostname;
-  const split = path.indexOf('?');
-  const pathname = split === -1 ? path : path.slice(0, split);
-  url.pathname = pathname;
-  url.search = split === -1 ? '' : path.slice(split);
-  if (url.hostname !== host) throw AppError.validation([{ path: 'path', message: 'Path must stay on the camera you entered' }]);
-  return url.toString();
 }
 
 function publicReference(value: string): string {
@@ -315,17 +301,8 @@ function publicReference(value: string): string {
 /** The address and login from the form. The password is only added for the AI service. */
 async function draftTarget(ctx: AuthContext, input: DraftInput) {
   const nets = urlNetworks(input.cameraType);
-  let streamUrl = applyStreamPath(input.streamUrl, input.path);
-  await assertCameraUrlAllowed(streamUrl, input.cameraType, nets.allowed, nets.blocked);
-  if (input.secure) {
-    const url = new URL(streamUrl);
-    if (url.protocol === 'rtsp:') {
-      url.protocol = 'rtsps:';
-      streamUrl = url.toString();
-      await assertCameraUrlAllowed(streamUrl, input.cameraType, nets.allowed, nets.blocked);
-    }
-  }
-  const reach = await reachable(new URL(streamUrl));
+  await assertCameraUrlAllowed(input.streamUrl, input.cameraType, nets.allowed, nets.blocked);
+  const reach = await reachable(new URL(input.streamUrl));
   let creds: { username?: string; password?: string } | null = null;
   if (!input.clearCredentials && input.username) {
     creds = { username: input.username, password: input.password ?? '' };
@@ -333,7 +310,7 @@ async function draftTarget(ctx: AuthContext, input: DraftInput) {
     const cam = await load(ctx, input.cameraId);
     if (cam.encryptedCredentials) creds = JSON.parse(cipher.decryptString(cam.encryptedCredentials, credentialsAad(cam.id))) as { username?: string; password?: string };
   }
-  return { url: withCredentials(streamUrl, creds), base: withCredentials(input.streamUrl, creds), reach };
+  return { url: withCredentials(input.streamUrl, creds), reach };
 }
 
 /** Checks the address typed in the form. Does not change the saved camera. */
@@ -374,43 +351,6 @@ function ownPreviewSession(ctx: AuthContext, sessionId: string) {
     throw AppError.notFound('Preview');
   }
   row.seen = Date.now();
-}
-
-function validationText(err: AppError): string {
-  if (Array.isArray(err.details)) {
-    const first = err.details.find((item) => item && typeof item === 'object' && 'message' in item) as { message?: string } | undefined;
-    if (first?.message) return first.message;
-  }
-  return err.message;
-}
-
-function stoppedCheckpoint(message: string, path = '/'): ProbeCheckpoint {
-  return { decision: 'stop', message, path, publicUrl: '', code: null, encrypted: false, nextPath: null };
-}
-
-/** Opens one path and reports the next one. Does not try that next path. */
-export async function probeDraft(ctx: AuthContext, input: DraftInput, ip: string | null) {
-  let draft: Awaited<ReturnType<typeof draftTarget>>;
-  try {
-    draft = await draftTarget(ctx, input);
-  } catch (err) {
-    if (err instanceof AppError && err.code === 'VALIDATION_ERROR') return stoppedCheckpoint(validationText(err));
-    throw err;
-  }
-  if (draft.reach.offsite) return stoppedCheckpoint(draft.reach.message ?? 'This server cannot open that camera.');
-  const result = await probeStream(draft.base, input.path);
-  if (!input.path) {
-    await audit({
-      organizationId: ctx.organizationId,
-      userId: ctx.userId,
-      action: 'CAMERA_TESTED',
-      entityType: 'camera',
-      entityId: input.cameraId ?? null,
-      ipAddress: ip,
-      metadata: { ok: result.decision === 'open', draft: true, preview: true },
-    });
-  }
-  return { ...result, publicUrl: result.publicUrl ? publicReference(result.publicUrl) : '' };
 }
 
 export async function beginPreview(ctx: AuthContext, input: DraftInput) {
