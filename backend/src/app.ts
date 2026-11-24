@@ -10,10 +10,6 @@ import { apiLimiter } from './middleware/rateLimit';
 import { errorHandler, notFound } from './middleware/error';
 import apiRouter from './routes';
 
-function connectorFrame(req: express.Request) {
-  return req.method === 'POST' && /^\/connector\/cameras\/[0-9a-f-]{36}\/frame$/i.test(req.path);
-}
-
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
@@ -52,15 +48,12 @@ export function createApp() {
     next();
   });
 
+  // Internal service routes authenticate with a shared token and accept larger payloads (evidence).
   app.use('/api/v1/internal', express.json({ limit: '8mb' }));
-  app.use('/api/v1', (req, res, next) => {
-    if (req.path.startsWith('/internal')) return next();
-    if (connectorFrame(req)) return express.raw({ type: () => true, limit: '3mb' })(req, res, next);
-    return express.json({ limit: '1mb' })(req, res, next);
-  });
-  app.use('/api/v1', (req, res, next) => (req.path.startsWith('/internal') || connectorFrame(req) ? next() : apiLimiter(req, res, next)));
+  app.use('/api/v1', (req, res, next) => (req.path.startsWith('/internal') ? next() : express.json({ limit: '1mb' })(req, res, next)));
+  app.use('/api/v1', (req, res, next) => (req.path.startsWith('/internal') ? next() : apiLimiter(req, res, next)));
   app.use('/api/v1', (req, res, next) =>
-    req.path.startsWith('/internal') || req.path.startsWith('/evidence/download') || connectorFrame(req) ? next() : csrfProtection(req, res, next),
+    req.path.startsWith('/internal') || req.path.startsWith('/evidence/download') ? next() : csrfProtection(req, res, next),
   );
   app.use('/api/v1', apiRouter);
 

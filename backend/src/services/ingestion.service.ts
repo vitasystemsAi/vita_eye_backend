@@ -139,7 +139,7 @@ function relayPreview(cameraId: string, jpeg: Buffer, annotated: Pick<FrameAck, 
  * Browser-camera frame ingest (Socket.IO). Applies authz, schedule and backpressure before inference.
  * `ticketId` is set for device-ticket sockets; a stopped or restarted camera no longer matches it.
  */
-export async function handleBrowserFrame(ctx: AuthContext, cameraId: string, jpeg: Buffer, ticketId?: string, source: 'device' | 'connector' = 'device'): Promise<FrameAck> {
+export async function handleBrowserFrame(ctx: AuthContext, cameraId: string, jpeg: Buffer, ticketId?: string): Promise<FrameAck> {
   if (!ctx.permissions.has('cameras:monitor')) return { ok: false, error: 'FORBIDDEN' };
   if (jpeg.length === 0 || jpeg.length > MAX_FRAME_BYTES || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
     return { ok: false, error: 'INVALID_FRAME' };
@@ -147,9 +147,7 @@ export async function handleBrowserFrame(ctx: AuthContext, cameraId: string, jpe
 
   const camera = await Camera.findByPk(cameraId);
   if (!camera || !cameraInScope(ctx, camera)) return { ok: false, error: 'CAMERA_NOT_FOUND' };
-  if (source === 'connector' ? !NETWORK_TYPES.has(camera.cameraType) : !LOCAL_TYPES.has(camera.cameraType)) {
-    return { ok: false, error: source === 'connector' ? 'NOT_A_NETWORK_CAMERA' : 'NOT_A_BROWSER_CAMERA' };
-  }
+  if (!LOCAL_TYPES.has(camera.cameraType)) return { ok: false, error: 'NOT_A_BROWSER_CAMERA' };
   if (!camera.isActive) return { ok: false, error: 'CAMERA_INACTIVE' };
   if (!camera.monitoringEnabled) return { ok: false, error: 'MONITORING_NOT_STARTED' };
   if (ticketId !== undefined && camera.monitorTicketId !== ticketId) return { ok: false, error: 'MONITORING_NOT_STARTED' };

@@ -130,10 +130,11 @@ export async function describeCameraReachability(url: URL): Promise<CameraReacha
   const here = locals.map((item) => item.address).join(', ') || 'no network address';
   const onLan = locals.some((item) => sameLan(host, item));
   if (!onLan && privateIpv4(host)) {
+    const prefix = host.split('.').slice(0, 3).join('.');
     return {
       open: false,
       offsite: true,
-      message: `${host} is on the client’s camera network. This server (${here}) cannot open it from here. Add the camera anyway — the site connector on the client’s PC opens it and sends the video to this account.`,
+      message: `${host} is on the office network. This server (${here}) cannot open it from here. Vita Eye on a computer with a ${prefix}.x address will open the camera and run detection.`,
     };
   }
   const website = port !== 80 && (await tcpOpen(host, 80, 800));

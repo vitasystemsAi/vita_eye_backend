@@ -139,7 +139,7 @@ export async function createCamera(ctx: AuthContext, input: CameraInput & { came
   } else if (input.cameraType === 'USB') {
     streamReference = usbDeviceReference(input.streamUrl);
   }
-  const cam = await sequelize.transaction(async (transaction) => {
+  return sequelize.transaction(async (transaction) => {
     const org = await Organization.findByPk(ctx.organizationId, { transaction });
     if (org?.cameraLimit != null) {
       const existing = await Camera.count({ where: { organizationId: ctx.organizationId }, transaction });
@@ -165,13 +165,8 @@ export async function createCamera(ctx: AuthContext, input: CameraInput & { came
       );
     }
     await audit({ organizationId: ctx.organizationId, userId: ctx.userId, action: 'CAMERA_CREATED', entityType: 'camera', entityId: cam.id, ipAddress: ip, metadata: { name: cam.cameraName, type: cam.cameraType } }, transaction);
-    return cam;
+    return presentCamera(cam);
   });
-  if (streamReference) {
-    const reach = await describeCameraReachability(new URL(streamReference));
-    if (reach.offsite) await cam.update({ monitoringEnabled: true });
-  }
-  return presentCamera(cam);
 }
 
 export async function updateCamera(ctx: AuthContext, id: string, input: CameraInput, ip: string | null) {
@@ -340,7 +335,7 @@ export async function startMonitoring(ctx: AuthContext, id: string, ip: string |
         if (cam.streamReference) await reachable(new URL(cam.streamReference));
         const started = await startNetworkStream(cam);
         message = started === 'offsite'
-          ? 'Monitoring is on. The site connector at the client will open this camera.'
+          ? 'Monitoring is on. This server is not on the camera’s network, so the Vita Eye computer on that network will open the stream.'
           : 'Stream ingestion started';
       } catch (err) {
         await setCameraStatus(cam, 'ERROR', publicCameraError(err));
