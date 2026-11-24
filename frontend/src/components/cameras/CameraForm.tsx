@@ -540,7 +540,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
                 <option value="http">HTTP MJPEG</option>
               </Select>
             </Field>
-            <Field label="Camera IP" error={errors.lanHost?.message} hint={camera?.streamReference ? `Current: ${camera.streamReference}` : 'Use the address from the camera website. This computer must be on that same network. “Not secure” in Edge is normal for that page.'}>
+            <Field label="Camera IP" error={errors.lanHost?.message} hint={camera?.streamReference ? `Current: ${camera.streamReference}` : 'Use the address the client gave you. If this server is somewhere else, add the camera anyway. The site connector on the client’s PC opens it.'}>
               <Input {...register('lanHost')} className="font-mono" placeholder="192.168.1.64" autoComplete="off" />
             </Field>
             <Field label="Port" error={errors.lanPort?.message}>

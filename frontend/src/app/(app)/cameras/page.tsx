@@ -17,6 +17,37 @@ import { isLocalCamera, type Camera, type CameraStatus } from '@/lib/types';
 
 const TYPE_LABEL: Record<Camera['cameraType'], string> = { BROWSER: 'Browser', USB: 'USB', LAN: 'LAN', LAN_PORT: 'CP Plus', RTSP: 'RTSP', ONVIF: 'ONVIF', HTTP_MJPEG: 'MJPEG' };
 
+function SiteConnector() {
+  const notify = useToast();
+  const [busy, setBusy] = useState(false);
+  const [command, setCommand] = useState<string | null>(null);
+
+  async function issue() {
+    setBusy(true);
+    try {
+      const { data } = await api.post<{ key: string }>('/connector/key');
+      const origin = window.location.origin;
+      setCommand(`$env:VITA_EYE_URL='${origin}'; $env:CONNECTOR_KEY='${data.key}'; node site-connector.mjs`);
+    } catch (err) {
+      notify('error', 'Could not create the connector key', errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="Site connector" description="One PC at each client, on the same network as their cameras. Create the key in that client’s account, run the command there once, then add their camera IPs from anywhere.">
+      <div className="space-y-3 p-4">
+        <Button size="sm" variant="secondary" disabled={busy} onClick={() => void issue()}>{busy ? 'Creating…' : 'Create connector key'}</Button>
+        {command && (
+          <pre className="overflow-x-auto rounded-lg bg-ink-950 p-3 text-xs text-ink-100">{command}</pre>
+        )}
+        {command && <p className="text-xs text-ink-300">Copy scripts/site-connector.mjs onto that PC. It needs Node.js and ffmpeg. Creating a new key stops the previous connector for this account. The key is shown only now.</p>}
+      </div>
+    </Card>
+  );
+}
+
 function ActionsMenu({ open, onToggle, children }: { open: boolean; onToggle: () => void; children: ReactNode }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -191,9 +222,10 @@ function CamerasView() {
       <PageHeader
         title="Camera Management"
         icon={<CameraIcon className="h-5 w-5" />}
-        description="USB and USB-C cameras open on the computer the cable is plugged into. LAN direct IP cameras are opened from an address you type. LAN port cameras are found automatically on this computer, the same way a USB camera is selected. RTSP, ONVIF, and MJPEG streams are ingested on the server."
+        description="Add a client’s camera by the IP they give you. A site connector on a PC at that client opens the camera and sends the video here. USB cameras still open on the computer the cable is plugged into."
         actions={can('cameras:manage') && <Button icon={<Plus className="h-4 w-4" />} onClick={() => setEditing('new')}>Add camera</Button>}
       />
+      {can('cameras:manage') && <SiteConnector />}
       <Card>
         <div className="flex flex-wrap gap-3 border-b border-ink-700/70 p-4">
           <Input placeholder="Search name or location" className="max-w-xs" value={search} onChange={(e) => setSearch(e.target.value)} />

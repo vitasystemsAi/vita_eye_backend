@@ -48,6 +48,8 @@ export class Organization extends Model<InferAttributes<Organization>, InferCrea
   declare pendingAdminName: CreationOptional<string | null>;
   declare pendingAdminEmail: CreationOptional<string | null>;
   declare pendingPasswordHash: CreationOptional<string | null>;
+  /** SHA-256 of the site-connector key. The plaintext is shown once and is not stored. */
+  declare connectorKeyHash: CreationOptional<string | null>;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
 }
@@ -87,13 +89,17 @@ Organization.init(
     pendingAdminName: { type: DataTypes.STRING(120), allowNull: true },
     pendingAdminEmail: { type: DataTypes.STRING(255), allowNull: true },
     pendingPasswordHash: { type: DataTypes.STRING(255), allowNull: true },
+    connectorKeyHash: { type: DataTypes.CHAR(64), allowNull: true, unique: true },
     createdAt: DataTypes.DATE(3),
     updatedAt: DataTypes.DATE(3),
   },
   {
     sequelize,
     tableName: 'organizations',
-    defaultScope: { attributes: { exclude: ['pendingPasswordHash'] } },
-    scopes: { withPendingSecret: { attributes: { include: ['pendingPasswordHash'] } } },
+    defaultScope: { attributes: { exclude: ['pendingPasswordHash', 'connectorKeyHash'] } },
+    scopes: {
+      withPendingSecret: { attributes: { include: ['pendingPasswordHash'] } },
+      withConnectorKey: { attributes: { include: ['connectorKeyHash'] } },
+    },
   },
 );
