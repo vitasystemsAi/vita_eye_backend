@@ -7,7 +7,7 @@ import { AppError } from '../utils/errors';
 import { pageMeta } from '../utils/http';
 import { assertCameraUrlAllowed, computerIpv4, describeCameraReachability, withCredentials } from '../utils/network';
 import { isWithinSchedule } from '../utils/schedule';
-import { testStream } from './ai.client';
+import { previewFrame, probeStream, startPreview, stopPreview, testStream, type ProbeCheckpoint } from './ai.client';
 import { audit } from './audit.service';
 import {
   LOCAL_TYPES,
@@ -282,18 +282,50 @@ export async function testConnection(ctx: AuthContext, id: string, ip: string | 
   return { ...result, tested: true };
 }
 
-/** Checks the address typed in the form. Does not change the saved camera. */
-export async function testDraftConnection(
-  ctx: AuthContext,
-  input: { cameraId?: string; cameraType: CameraType; streamUrl: string; username?: string | null; password?: string | null; clearCredentials?: boolean },
-  ip: string | null,
-) {
+interface DraftInput {
+  cameraId?: string;
+  cameraType: CameraType;
+  streamUrl: string;
+  username?: string | null;
+  password?: string | null;
+  clearCredentials?: boolean;
+  path?: string;
+  secure?: boolean;
+}
+
+function applyStreamPath(streamUrl: string, path?: string): string {
+  if (!path) return streamUrl;
+  const url = new URL(streamUrl);
+  const host = url.hostname;
+  const split = path.indexOf('?');
+  const pathname = split === -1 ? path : path.slice(0, split);
+  url.pathname = pathname;
+  url.search = split === -1 ? '' : path.slice(split);
+  if (url.hostname !== host) throw AppError.validation([{ path: 'path', message: 'Path must stay on the camera you entered' }]);
+  return url.toString();
+}
+
+function publicReference(value: string): string {
+  const url = new URL(value);
+  url.username = '';
+  url.password = '';
+  return url.toString();
+}
+
+/** The address and login from the form. The password is only added for the AI service. */
+async function draftTarget(ctx: AuthContext, input: DraftInput) {
   const nets = urlNetworks(input.cameraType);
-  await assertCameraUrlAllowed(input.streamUrl, input.cameraType, nets.allowed, nets.blocked);
-  const reach = await reachable(new URL(input.streamUrl));
-  if (reach.offsite) {
-    return { ok: true, tested: false, message: reach.message };
+  let streamUrl = applyStreamPath(input.streamUrl, input.path);
+  await assertCameraUrlAllowed(streamUrl, input.cameraType, nets.allowed, nets.blocked);
+  if (input.secure) {
+    const url = new URL(streamUrl);
+    if (url.protocol === 'rtsp:') {
+      url.protocol = 'rtsps:';
+      streamUrl = url.toString();
+      await assertCameraUrlAllowed(streamUrl, input.cameraType, nets.allowed, nets.blocked);
+    }
   }
+  const reach = await reachable(new URL(streamUrl));
   let creds: { username?: string; password?: string } | null = null;
   if (!input.clearCredentials && input.username) {
     creds = { username: input.username, password: input.password ?? '' };
@@ -301,7 +333,16 @@ export async function testDraftConnection(
     const cam = await load(ctx, input.cameraId);
     if (cam.encryptedCredentials) creds = JSON.parse(cipher.decryptString(cam.encryptedCredentials, credentialsAad(cam.id))) as { username?: string; password?: string };
   }
-  const result = await testStream(withCredentials(input.streamUrl, creds));
+  return { url: withCredentials(streamUrl, creds), base: withCredentials(input.streamUrl, creds), reach };
+}
+
+/** Checks the address typed in the form. Does not change the saved camera. */
+export async function testDraftConnection(ctx: AuthContext, input: DraftInput, ip: string | null) {
+  const draft = await draftTarget(ctx, input);
+  if (draft.reach.offsite) {
+    return { ok: true, tested: false, message: draft.reach.message };
+  }
+  const result = await testStream(draft.url);
   await audit({
     organizationId: ctx.organizationId,
     userId: ctx.userId,
@@ -312,6 +353,85 @@ export async function testDraftConnection(
     metadata: { ok: result.ok, draft: true },
   });
   return { ...result, tested: true };
+}
+
+// shortcut: preview sessions live in this process, move them to Redis if the API runs more than one instance
+const livePreviews = new Map<string, { userId: string; organizationId: string; seen: number }>();
+const PREVIEW_TTL_MS = 90_000;
+
+function rememberPreviewSession(ctx: AuthContext, sessionId: string) {
+  const now = Date.now();
+  for (const [id, row] of livePreviews) {
+    if (now - row.seen > PREVIEW_TTL_MS) livePreviews.delete(id);
+  }
+  livePreviews.set(sessionId, { userId: ctx.userId, organizationId: ctx.organizationId, seen: now });
+}
+
+function ownPreviewSession(ctx: AuthContext, sessionId: string) {
+  const row = livePreviews.get(sessionId);
+  if (!row || row.userId !== ctx.userId || row.organizationId !== ctx.organizationId || Date.now() - row.seen > PREVIEW_TTL_MS) {
+    livePreviews.delete(sessionId);
+    throw AppError.notFound('Preview');
+  }
+  row.seen = Date.now();
+}
+
+function validationText(err: AppError): string {
+  if (Array.isArray(err.details)) {
+    const first = err.details.find((item) => item && typeof item === 'object' && 'message' in item) as { message?: string } | undefined;
+    if (first?.message) return first.message;
+  }
+  return err.message;
+}
+
+function stoppedCheckpoint(message: string, path = '/'): ProbeCheckpoint {
+  return { decision: 'stop', message, path, publicUrl: '', code: null, encrypted: false, nextPath: null };
+}
+
+/** Opens one path and reports the next one. Does not try that next path. */
+export async function probeDraft(ctx: AuthContext, input: DraftInput, ip: string | null) {
+  let draft: Awaited<ReturnType<typeof draftTarget>>;
+  try {
+    draft = await draftTarget(ctx, input);
+  } catch (err) {
+    if (err instanceof AppError && err.code === 'VALIDATION_ERROR') return stoppedCheckpoint(validationText(err));
+    throw err;
+  }
+  if (draft.reach.offsite) return stoppedCheckpoint(draft.reach.message ?? 'This server cannot open that camera.');
+  const result = await probeStream(draft.base, input.path);
+  if (!input.path) {
+    await audit({
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+      action: 'CAMERA_TESTED',
+      entityType: 'camera',
+      entityId: input.cameraId ?? null,
+      ipAddress: ip,
+      metadata: { ok: result.decision === 'open', draft: true, preview: true },
+    });
+  }
+  return { ...result, publicUrl: result.publicUrl ? publicReference(result.publicUrl) : '' };
+}
+
+export async function beginPreview(ctx: AuthContext, input: DraftInput) {
+  const draft = await draftTarget(ctx, input);
+  if (draft.reach.offsite) return { ok: false as const, error: draft.reach.message ?? 'This server cannot open that camera.' };
+  const result = await startPreview(draft.url);
+  if (!result.ok) return result;
+  rememberPreviewSession(ctx, result.sessionId);
+  return { ...result, publicUrl: publicReference(result.publicUrl) };
+}
+
+export async function readPreview(ctx: AuthContext, sessionId: string) {
+  ownPreviewSession(ctx, sessionId);
+  return previewFrame(sessionId);
+}
+
+export async function endPreview(ctx: AuthContext, sessionId: string) {
+  ownPreviewSession(ctx, sessionId);
+  livePreviews.delete(sessionId);
+  const result = await stopPreview(sessionId);
+  return result;
 }
 
 export async function startMonitoring(ctx: AuthContext, id: string, ip: string | null) {

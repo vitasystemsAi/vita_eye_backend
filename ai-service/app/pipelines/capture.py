@@ -80,16 +80,17 @@ def _request_path(parsed) -> str:
     return path
 
 
-def sniff(url: str) -> str:
-    """Classify a URL from response headers only. One of: mjpeg, jpeg, html, missing, down."""
+def http_probe(url: str) -> Optional[tuple[int, str]]:
+    """Status code and body kind, or None when the host does not answer. The body is not read."""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        return "other"
+        return None
     conn = _connection(parsed)
     try:
         conn.request("GET", _request_path(parsed), headers=_auth_header(parsed))
         response = conn.getresponse()
-        kind = _classify(response.status, response.getheader("Content-Type") or "")
+        code = response.status
+        kind = _classify(code, response.getheader("Content-Type") or "")
         # Drop the socket before close so a never-ending MJPEG body is not read.
         sock = conn.sock
         conn.sock = None
@@ -99,11 +100,19 @@ def sniff(url: str) -> str:
             except OSError:
                 pass
             sock.close()
-        return kind
+        return code, kind
     except (TimeoutError, OSError, http.client.HTTPException):
-        return "down"
+        return None
     finally:
         conn.close()
+
+
+def sniff(url: str) -> str:
+    """Classify a URL from response headers only. One of: mjpeg, jpeg, html, missing, down."""
+    if urlparse(url).scheme not in ("http", "https"):
+        return "other"
+    probed = http_probe(url)
+    return "down" if probed is None else probed[1]
 
 
 def _classify(status: int, content_type: str) -> str:

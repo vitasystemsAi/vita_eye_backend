@@ -8,7 +8,8 @@ from pydantic import ValidationError
 
 from app.api.deps import require_internal_token
 from app.config.settings import get_settings
-from app.models.schemas import FrameMeta, FrameResponse, Policy, PolicyUpdate, StreamStart, StreamStop, StreamTest
+from app.models.schemas import FrameMeta, FrameResponse, Policy, PolicyUpdate, PreviewStop, StreamProbe, StreamStart, StreamStop, StreamTest
+from app.pipelines.preview import preview_hub, probe_checkpoint
 from app.pipelines.stream_worker import StreamConfig, test_stream
 from app.services.face_engine import decode_image
 from app.services.quality import POSE_TARGETS, guide_reading, pose_nudge
@@ -171,6 +172,29 @@ def streams_stop(request: Request, body: StreamStop):
 @router.post("/streams/test")
 def streams_test(body: StreamTest):
     return test_stream(body.url)
+
+
+@router.post("/streams/probe")
+def streams_probe(body: StreamProbe):
+    return probe_checkpoint(body.url, body.path)
+
+
+@router.post("/streams/preview/start")
+def streams_preview_start(body: StreamTest):
+    return preview_hub.start(body.url)
+
+
+@router.get("/streams/preview/{session_id}")
+def streams_preview_frame(session_id: str):
+    frame = preview_hub.frame(session_id)
+    if frame is None:
+        raise HTTPException(status_code=404, detail="Preview is not running")
+    return frame
+
+
+@router.post("/streams/preview/stop")
+def streams_preview_stop(body: PreviewStop):
+    return {"stopped": preview_hub.stop(body.session_id)}
 
 
 @router.get("/streams")
