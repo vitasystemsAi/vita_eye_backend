@@ -4,7 +4,7 @@ import * as cameras from '../services/cameras.service';
 import { parse } from '../utils/errors';
 import { clientIp, created, ok } from '../utils/http';
 import { idParam } from '../validators/users.validators';
-import { createCameraSchema, cpPlusSchema, listCamerasSchema, previewProbeSchema, previewSessionSchema, testDraftSchema, updateCameraSchema } from '../validators/cameras.validators';
+import { createCameraSchema, cpPlusSchema, listCamerasSchema, testDraftSchema, updateCameraSchema } from '../validators/cameras.validators';
 import { addCpPlusCameras } from '../services/cpPlus';
 
 export async function list(req: Request, res: Response) {
@@ -34,22 +34,6 @@ export async function test(req: Request, res: Response) {
 
 export async function testDraft(req: Request, res: Response) {
   ok(res, await cameras.testDraftConnection(authOf(req), parse(testDraftSchema, req.body), clientIp(req)));
-}
-
-export async function previewProbe(req: Request, res: Response) {
-  ok(res, await cameras.probeDraft(authOf(req), parse(previewProbeSchema, req.body), clientIp(req)));
-}
-
-export async function previewStart(req: Request, res: Response) {
-  ok(res, await cameras.beginPreview(authOf(req), parse(previewProbeSchema, req.body)));
-}
-
-export async function previewRead(req: Request, res: Response) {
-  ok(res, await cameras.readPreview(authOf(req), parse(previewSessionSchema, req.params).sessionId));
-}
-
-export async function previewEnd(req: Request, res: Response) {
-  ok(res, await cameras.endPreview(authOf(req), parse(previewSessionSchema, req.params).sessionId));
 }
 
 export async function discover(req: Request, res: Response) {

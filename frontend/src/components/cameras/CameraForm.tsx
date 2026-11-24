@@ -1,7 +1,7 @@
 'use client';
 
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Video } from 'lucide-react';
+import { PlugZap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
@@ -168,14 +168,8 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
   const [selectedIps, setSelectedIps] = useState<string[]>([]);
   const [lanNotice, setLanNotice] = useState<string | null>(null);
   const [findingLan, setFindingLan] = useState(false);
-  const [previewBusy, setPreviewBusy] = useState(false);
-  const [previewSteps, setPreviewSteps] = useState<Array<{ title: string; detail: string; state: 'run' | 'ok' | 'fail' | 'pause' }>>([]);
-  const [checkpoint, setCheckpoint] = useState<{ message: string; nextPath: string | null } | null>(null);
-  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
-  const [previewOn, setPreviewOn] = useState(false);
-  const previewSession = useRef<string | null>(null);
-  const previewBase = useRef('');
-  const previewWatch = useRef(0);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const {
     register,
     handleSubmit,
@@ -284,201 +278,82 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
     }
   }
 
-  function releasePreview() {
-    previewWatch.current += 1;
-    const id = previewSession.current;
-    previewSession.current = null;
-    setPreviewOn(false);
-    if (id) void api.post(`/cameras/preview/${id}/stop`, {}).catch(() => undefined);
-  }
-
-  useEffect(() => {
-    return () => {
-      previewWatch.current += 1;
-      const id = previewSession.current;
-      previewSession.current = null;
-      if (id) void api.post(`/cameras/preview/${id}/stop`, {}).catch(() => undefined);
-    };
-  }, []);
-
-  function applyOpenedUrl(publicUrl: string) {
+  async function testConnection() {
     const v = getValues();
-    if (v.cameraType === 'LAN') {
-      const parts = splitLan(publicUrl);
-      setValue('lanProtocol', parts.lanProtocol);
-      setValue('lanHost', parts.lanHost);
-      setValue('lanPort', parts.lanPort);
-      setValue('lanPath', parts.lanPath);
-    } else if (v.cameraType === 'LAN_PORT') {
-      setValue('lanPortUrl', publicUrl, { shouldValidate: true });
-    } else {
-      setValue('streamUrl', publicUrl);
-    }
-  }
-
-  async function streamFromForm(): Promise<string | null> {
-    const v = getValues();
+    const network = v.cameraType === 'LAN' || v.cameraType === 'LAN_PORT' || v.cameraType === 'RTSP' || v.cameraType === 'ONVIF' || v.cameraType === 'HTTP_MJPEG';
+    if (!network) return;
+    let streamUrl = '';
     if (v.cameraType === 'LAN') {
       if (!v.lanHost.trim()) {
         setError('lanHost', { message: 'Enter the camera IP address on your LAN' });
-        return null;
+        return;
       }
-      if (!(await trigger(['lanHost', 'lanPort', 'lanPath']))) return null;
-      return lanStreamUrl(v.lanProtocol, v.lanHost, v.lanPort, v.lanPath);
-    }
-    if (v.cameraType === 'LAN_PORT') {
-      const streamUrl = v.lanPortUrl.trim();
+      if (!(await trigger(['lanHost', 'lanPort', 'lanPath']))) return;
+      streamUrl = lanStreamUrl(v.lanProtocol, v.lanHost, v.lanPort, v.lanPath);
+    } else if (v.cameraType === 'LAN_PORT') {
+      streamUrl = v.lanPortUrl.trim();
       if (!streamUrl) {
         setError('lanPortUrl', { message: 'Detect the LAN port cameras and select one' });
-        return null;
+        return;
       }
-      return streamUrl;
-    }
-    const streamUrl = v.streamUrl.trim() || camera?.streamReference || '';
-    if (!streamUrl) {
-      setError('streamUrl', { message: 'Stream URL is required for network cameras' });
-      return null;
-    }
-    return streamUrl;
-  }
-
-  function previewBody(streamUrl: string, path?: string, secure?: boolean) {
-    const v = getValues();
-    return {
-      cameraId: camera?.id,
-      cameraType: v.cameraType,
-      streamUrl,
-      username: v.username || undefined,
-      password: v.password || undefined,
-      clearCredentials: v.clearCredentials || undefined,
-      path,
-      secure: secure || undefined,
-    };
-  }
-
-  function previewFailure(err: unknown): string {
-    if (err instanceof ApiError) return err.fieldErrors().streamUrl || err.message;
-    if ((err as Error).name === 'TimeoutError' || (err as Error).name === 'AbortError') return 'The camera did not answer in time. Check the IP, port, and path.';
-    return errorMessage(err);
-  }
-
-  async function watchPreview(sessionId: string) {
-    const ticket = previewWatch.current;
-    while (previewSession.current === sessionId && ticket === previewWatch.current) {
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      if (previewSession.current !== sessionId || ticket !== previewWatch.current) return;
-      try {
-        const { data } = await api.get<{ frame: string }>(`/cameras/preview/${sessionId}`);
-        if (previewSession.current !== sessionId) return;
-        setPreviewSrc(`data:image/jpeg;base64,${data.frame}`);
-      } catch {
-        if (previewSession.current === sessionId) {
-          previewSession.current = null;
-          void api.post(`/cameras/preview/${sessionId}/stop`, {}).catch(() => undefined);
-          setPreviewSteps((current) => [...current, { title: 'Preview stopped', detail: 'The camera closed the picture.', state: 'fail' }]);
-        }
+    } else {
+      streamUrl = v.streamUrl.trim() || camera?.streamReference || '';
+      if (!streamUrl) {
+        setError('streamUrl', { message: 'Stream URL is required for network cameras' });
         return;
       }
     }
-  }
-
-  async function openPicture(streamUrl: string, path: string | undefined, secure: boolean) {
-    const { data } = await api.post<{ ok: boolean; error?: string; sessionId?: string; frame?: string; publicUrl?: string }>(
-      '/cameras/preview/start',
-      previewBody(streamUrl, path, secure),
-      { signal: AbortSignal.timeout(25000) },
-    );
-    if (!data.ok || !data.sessionId || !data.frame) {
-      setPreviewSteps((current) => {
-        const next = current.slice();
-        const last = next[next.length - 1];
-        if (last) next[next.length - 1] = { ...last, state: 'fail', detail: data.error || 'The picture did not open.' };
-        return next;
-      });
-      return false;
-    }
-    if (data.publicUrl) applyOpenedUrl(data.publicUrl);
-    releasePreview();
-    previewSession.current = data.sessionId;
-    setPreviewOn(true);
-    setPreviewSrc(`data:image/jpeg;base64,${data.frame}`);
-    setPreviewSteps((current) => {
-      const next = current.slice();
-      const last = next[next.length - 1];
-      if (last) next[next.length - 1] = { ...last, state: 'ok', detail: 'Picture is live. This path will be saved.' };
-      return next;
-    });
-    void watchPreview(data.sessionId);
-    return true;
-  }
-
-  async function runPreviewStep(streamUrl: string, path?: string) {
-    setPreviewSteps((current) => [...current, { title: path || 'Typed address', detail: 'Opening this path with the username and password…', state: 'run' }]);
-    setCheckpoint(null);
-    const { data } = await api.post<{ decision: 'open' | 'pause' | 'stop'; message: string; path: string; encrypted: boolean; nextPath: string | null }>(
-      '/cameras/preview/probe',
-      previewBody(streamUrl, path),
-      { signal: AbortSignal.timeout(25000) },
-    );
-    setPreviewSteps((current) => {
-      const next = current.slice();
-      const last = next[next.length - 1];
-      if (last) {
-        next[next.length - 1] = {
-          title: data.path || last.title,
-          detail: data.message,
-          state: data.decision === 'open' ? 'ok' : data.decision === 'pause' ? 'pause' : 'fail',
-        };
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const { data } = await api.post<{ ok: boolean; tested: boolean; error?: string; message?: string; width?: number; height?: number; streamUrl?: string }>(
+        '/cameras/test-connection',
+        {
+          cameraId: camera?.id,
+          cameraType: v.cameraType,
+          streamUrl,
+          username: v.username || undefined,
+          password: v.password || undefined,
+          clearCredentials: v.clearCredentials || undefined,
+        },
+        { signal: AbortSignal.timeout(50000) },
+      );
+      if (data.ok && data.streamUrl) {
+        if (v.cameraType === 'LAN') {
+          const parts = splitLan(data.streamUrl);
+          setValue('lanProtocol', parts.lanProtocol);
+          setValue('lanHost', parts.lanHost);
+          setValue('lanPort', parts.lanPort);
+          setValue('lanPath', parts.lanPath);
+        } else if (v.cameraType === 'LAN_PORT') {
+          setValue('lanPortUrl', data.streamUrl, { shouldValidate: true });
+        } else {
+          setValue('streamUrl', data.streamUrl);
+        }
       }
-      return next;
-    });
-    if (data.decision === 'open') {
-      const opened = await openPicture(streamUrl, data.path, data.encrypted);
-      if (!opened && data.nextPath) setCheckpoint({ message: 'No picture on this path.', nextPath: data.nextPath });
-      return;
-    }
-    if (data.decision === 'pause') setCheckpoint({ message: data.message, nextPath: data.nextPath });
-  }
-
-  async function startLivePreview() {
-    const streamUrl = await streamFromForm();
-    if (!streamUrl) return;
-    releasePreview();
-    setPreviewSrc(null);
-    setCheckpoint(null);
-    setPreviewSteps([]);
-    previewBase.current = streamUrl;
-    setPreviewBusy(true);
-    try {
-      await runPreviewStep(streamUrl);
+      setTestResult(
+        data.ok
+          ? { ok: true, text: data.message || (data.streamUrl ? `Connected on ${data.streamUrl}. That path will be saved.` : data.width ? `Connected. Received a ${data.width}×${data.height} frame.` : 'Connected.') }
+          : { ok: false, text: data.error || 'The stream could not be opened.' },
+      );
     } catch (err) {
-      setPreviewSteps([{ title: 'Could not open', detail: previewFailure(err), state: 'fail' }]);
+      if (err instanceof ApiError) {
+        const fields = err.fieldErrors();
+        const message = fields.streamUrl || err.message;
+        if (v.cameraType === 'LAN' && fields.streamUrl) setError('lanHost', { message: fields.streamUrl });
+        if (v.cameraType === 'LAN_PORT' && fields.streamUrl) setError('lanPortUrl', { message: fields.streamUrl });
+        setTestResult({ ok: false, text: message });
+      } else if ((err as Error).name === 'TimeoutError' || (err as Error).name === 'AbortError') {
+        setTestResult({ ok: false, text: 'The camera did not answer in time. Check the IP, port, and path.' });
+      } else {
+        setTestResult({ ok: false, text: errorMessage(err) });
+      }
     } finally {
-      setPreviewBusy(false);
+      setTesting(false);
     }
-  }
-
-  async function proceedPreview() {
-    const path = checkpoint?.nextPath;
-    if (!path || !previewBase.current) return;
-    setPreviewBusy(true);
-    try {
-      await runPreviewStep(previewBase.current, path);
-    } catch (err) {
-      setPreviewSteps((current) => [...current, { title: path, detail: previewFailure(err), state: 'fail' }]);
-    } finally {
-      setPreviewBusy(false);
-    }
-  }
-
-  function interruptPreview() {
-    releasePreview();
-    setCheckpoint(null);
-    setPreviewSteps((current) => [...current, { title: 'Interrupted', detail: 'Stopped. Change the path or the password, then run the preview again.', state: 'pause' }]);
   }
 
   async function submit(v: FormValues) {
-    releasePreview();
     if (directUrl && !camera && !v.streamUrl) {
       setError('streamUrl', { message: 'Stream URL is required for network cameras' });
       return;
@@ -629,7 +504,7 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
       {type === 'LAN' && (
         <div className="space-y-4 rounded-xl border border-ink-700 bg-ink-850/60 p-4">
           <p className="text-xs text-ink-400">
-            The camera’s Ethernet cable goes to your LAN. Enter the IP from the camera website. CP Plus cameras use the same username and password as that website. Live preview opens that address with the login and pauses when a path fails, so you can try the next one or type it yourself.
+            The camera’s Ethernet cable goes to your LAN. Enter the IP from the camera website. CP Plus cameras use the same username and password as that website. Vita Eye selects the CP Plus stream path when the usual path is not found.
           </p>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <Field label="Camera brand" hint="CP Plus fills the stream path those cameras publish.">
@@ -820,53 +695,13 @@ export function CameraForm({ camera, onSubmit, onCancel }: { camera?: Camera; on
       </div>
 
       {errors.root && <p className="text-sm text-red-300">{errors.root.message}</p>}
-      {(type === 'LAN' || type === 'LAN_PORT' || directUrl) && (previewSteps.length > 0 || previewSrc) && (
-        <div className="space-y-3 rounded-xl border border-ink-700 bg-ink-850/60 p-4">
-          <div className="overflow-hidden rounded-lg border border-ink-700 bg-black">
-            {previewSrc ? (
-              <img src={previewSrc} alt="Live preview from the camera" className="aspect-video w-full object-contain" />
-            ) : (
-              <p className="px-3 py-8 text-center text-xs text-ink-400">The picture appears here when a path accepts the username and password.</p>
-            )}
-          </div>
-          <ol className="space-y-2">
-            {previewSteps.map((step, index) => (
-              <li key={`${step.title}-${index}`} className="text-sm">
-                <span className={step.state === 'ok' ? 'text-emerald-200' : step.state === 'fail' ? 'text-red-200' : step.state === 'pause' ? 'text-amber-200' : 'text-ink-100'}>
-                  {index + 1}. {step.title}
-                </span>
-                <span className="mt-0.5 block text-xs text-ink-400">{step.detail}</span>
-              </li>
-            ))}
-          </ol>
-          {checkpoint && (
-            <div className="space-y-3 rounded-lg bg-amber-500/10 px-3 py-3">
-              <p className="text-sm text-amber-100">Checkpoint. {checkpoint.message}</p>
-              {checkpoint.nextPath && <p className="break-all font-mono text-xs text-ink-300">Next path: {checkpoint.nextPath}</p>}
-              <div className="flex flex-wrap gap-2">
-                {checkpoint.nextPath && (
-                  <Button variant="secondary" disabled={previewBusy} onClick={() => void proceedPreview()}>
-                    Proceed
-                  </Button>
-                )}
-                <Button variant="secondary" disabled={previewBusy} onClick={interruptPreview}>
-                  Interrupt
-                </Button>
-              </div>
-              <p className="text-xs text-ink-400">Proceed tries the next path. Interrupt stops here so you can change the path or password and run the preview again.</p>
-            </div>
-          )}
-          {previewOn && (
-            <Button variant="secondary" onClick={releasePreview}>
-              Stop preview
-            </Button>
-          )}
-        </div>
+      {testResult && (
+        <p className={`rounded-lg px-3 py-2 text-sm ${testResult.ok ? 'bg-emerald-500/10 text-emerald-200' : 'bg-red-500/10 text-red-200'}`}>{testResult.text}</p>
       )}
       <div className="flex items-center justify-end gap-2">
         {(type === 'LAN' || type === 'LAN_PORT' || directUrl) && (
-          <Button variant="secondary" className="mr-auto" icon={<Video className="h-4 w-4" />} loading={previewBusy} onClick={() => void startLivePreview()}>
-            Live preview
+          <Button variant="secondary" className="mr-auto" icon={<PlugZap className="h-4 w-4" />} loading={testing} onClick={() => void testConnection()}>
+            Test connection
           </Button>
         )}
         <Button variant="secondary" onClick={onCancel}>

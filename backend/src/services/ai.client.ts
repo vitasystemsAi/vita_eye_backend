@@ -154,45 +154,6 @@ export function testStream(url: string) {
   return call<{ ok: boolean; width?: number; height?: number; error?: string }>('/v1/streams/test', { ...json({ url }), timeoutMs: 45000 });
 }
 
-export type ProbeDecision = 'open' | 'pause' | 'stop';
-
-export interface ProbeCheckpoint {
-  decision: ProbeDecision;
-  message: string;
-  path: string;
-  publicUrl: string;
-  code: number | null;
-  encrypted: boolean;
-  nextPath: string | null;
-}
-
-/** One path only. The caller decides whether to try the next path. */
-export function probeStream(url: string, path?: string) {
-  return call<ProbeCheckpoint>('/v1/streams/probe', { ...json({ url, path }), timeoutMs: 20000 });
-}
-
-export interface PreviewFrame {
-  ok: true;
-  sessionId: string;
-  frame: string;
-  width: number;
-  height: number;
-  publicUrl: string;
-  path: string;
-}
-
-export function startPreview(url: string) {
-  return call<PreviewFrame | { ok: false; error: string }>('/v1/streams/preview/start', { ...json({ url }), timeoutMs: 20000 });
-}
-
-export function previewFrame(sessionId: string) {
-  return call<{ frame: string; width: number; height: number }>(`/v1/streams/preview/${encodeURIComponent(sessionId)}`, { timeoutMs: 8000 });
-}
-
-export function stopPreview(sessionId: string) {
-  return call<{ stopped: boolean }>('/v1/streams/preview/stop', { ...json({ sessionId }), timeoutMs: 5000 });
-}
-
 export function listStreams() {
   return call<{ streams: Array<{ cameraId: string; status: string; error?: string | null; fps?: number }> }>('/v1/streams', { timeoutMs: 5000 });
 }
