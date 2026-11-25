@@ -203,6 +203,9 @@ export async function handleBrowserFrame(ctx: AuthContext, cameraId: string, jpe
 
 type RunningStreams = () => Promise<Map<string, string> | null>;
 
+/** One slow reply is the AI service being busy with the cameras. Two in a row means it is down. */
+let missedStreamLists = 0;
+
 /**
  * Periodic reconciliation: marks silent browser cameras offline, enforces monitoring schedules and
  * restarts network streams that the AI service lost (e.g. after a restart). Runs inside every
@@ -214,7 +217,11 @@ export async function reconcileCameras() {
     (streams ??= listStreams()
       .then((r) => new Map(r.streams.map((s) => [s.cameraId, s.status])))
       .catch(() => null));
-  await forEachTenant((tenant) => reconcileTenantCameras(running, streamsAllowed(tenant.status)), { statuses: ['ACTIVE', 'SUSPENDED', 'ON_HOLD', 'DEACTIVATED', 'ARCHIVED'] });
+  const listed = await running();
+  if (listed) missedStreamLists = 0;
+  else missedStreamLists += 1;
+  const reportDown = missedStreamLists >= 2;
+  await forEachTenant((tenant) => reconcileTenantCameras(running, streamsAllowed(tenant.status), reportDown), { statuses: ['ACTIVE', 'SUSPENDED', 'ON_HOLD', 'DEACTIVATED', 'ARCHIVED'] });
 }
 
 /** Stops every running network stream of the current tenant (organization put on hold). */
@@ -226,7 +233,7 @@ export async function stopTenantStreams(reason: string) {
   }
 }
 
-async function reconcileTenantCameras(getRunning: RunningStreams, organizationActive: boolean) {
+async function reconcileTenantCameras(getRunning: RunningStreams, organizationActive: boolean, reportDown: boolean) {
   const stale = await Camera.findAll({
     where: { cameraType: { [Op.in]: [...LOCAL_TYPES] }, status: 'ONLINE', lastConnectedAt: { [Op.lt]: new Date(Date.now() - BROWSER_OFFLINE_AFTER_MS) } },
   });
@@ -243,6 +250,7 @@ async function reconcileTenantCameras(getRunning: RunningStreams, organizationAc
     return;
   }
   if (!running) {
+    if (!reportDown) return;
     for (const cam of network) {
       if (cam.status !== 'ERROR') await setCameraStatus(cam, 'ERROR', 'AI service unavailable');
     }

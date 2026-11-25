@@ -155,7 +155,7 @@ export function testStream(url: string) {
 }
 
 export function listStreams() {
-  return call<{ streams: Array<{ cameraId: string; status: string; error?: string | null; fps?: number }> }>('/v1/streams', { timeoutMs: 5000 });
+  return call<{ streams: Array<{ cameraId: string; status: string; error?: string | null; fps?: number }> }>('/v1/streams', { timeoutMs: 12000 });
 }
 
 export function pushPolicy(organizationId: string, policy: RecognitionPolicy, galleryVersion: string) {
